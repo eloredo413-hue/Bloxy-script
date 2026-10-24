@@ -3,14 +3,16 @@
 
 do
 	local NEW_URL = "https://gist.githubusercontent.com/eloredo413-hue/e1bf3f24da8cf13cbef1c2cd5cdab8c9/raw/2d47a851e2c75bc7908517406496b160a5821a80/Forcefield%2520fix%25202011"
-	local SIG = "-- OLD FORCEFIELD"
+	-- Must be at the very START of the code, otherwise the whole Bloxy
+	-- script (which contains this text inside it) would get replaced too
+	local SIG = "^%s*%-%- OLD FORCEFIELD"
 	local _orig = getgenv().loadstring or loadstring
 
 	------------------------------------------------------------
 	-- LOADSTRING HOOK (swaps the old 2012 forcefield for the fixed one)
 	------------------------------------------------------------
 	local function patched(code, name)
-		if type(code) == "string" and string.find(code, SIG, 1, true) then
+		if type(code) == "string" and string.find(code, SIG) then
 			print("[2012 FF Hook] 2012 forcefield picked — loading FIXED forcefield...")
 			local ok, nc = pcall(function() return game:HttpGet(NEW_URL) end)
 			if ok and type(nc) == "string" and #nc > 100 then
