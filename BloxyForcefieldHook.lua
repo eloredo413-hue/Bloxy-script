@@ -1,10 +1,13 @@
--- [[ BLOXY FORCEFIELD 2012 HOOK ]] --
--- Run this INSTEAD of the normal Bloxy loadstring.
--- It hooks loadstring so that when Bloxy runs its 2012 forcefield
--- (from the button or from saved choices) the fixed forcefield
--- (no studs / no decals) runs instead. The Bloxy script itself is not changed.
+-- [[ BLOXY FORCEFIELD 2012 FIX (ADD-ON) ]] --
+-- Execute this before OR after Bloxy. The Bloxy script itself is not changed.
+--  * Before Bloxy: hooks loadstring so Bloxy's 2012 forcefield runs the fixed
+--    forcefield (no studs / no decals) instead.
+--  * After Bloxy: patches the 2012 forcefield that is already running, and any
+--    it builds later, with the same fix.
 
-local BLOXY_URL = "https://raw.githubusercontent.com/eloredo413-hue/Bloxy-script/main/Bloxy"
+local env = (getgenv and getgenv()) or getfenv(0)
+if env.__BloxyFF2012FixLoaded then return end
+env.__BloxyFF2012FixLoaded = true
 
 local FIXED_FORCEFIELD_2012 = [==[
 -- FORCEFIELD (No Studs / No Decals)
@@ -194,37 +197,81 @@ lp.CharacterAdded:Connect(function(newChar)
 end)
 ]==]
 
+----------------------------------------------------------------------------------------------------
+-- [[ BEFORE BLOXY: SWAP THE 2012 FORCEFIELD SCRIPT ]] --
+----------------------------------------------------------------------------------------------------
 -- Bloxy's Forcefield_2012 script always starts with this header
 local function isBloxyForcefield2012(code)
 	return type(code) == "string" and code:match("^%s*%-%- OLD FORCEFIELD") ~= nil
 end
 
-local env = (getgenv and getgenv()) or getfenv(0)
-local originalLoadstring = env.__BloxyFFOriginalLoadstring or loadstring
-env.__BloxyFFOriginalLoadstring = originalLoadstring
+local originalLoadstring = loadstring
 
-local function hookedLoadstring(code, ...)
-	if isBloxyForcefield2012(code) then
-		code = FIXED_FORCEFIELD_2012
+local function makeHook(callOriginal)
+	return function(code, ...)
+		if isBloxyForcefield2012(code) then
+			code = FIXED_FORCEFIELD_2012
+		end
+		return callOriginal(code, ...)
 	end
-	return originalLoadstring(code, ...)
 end
 
-env.loadstring = hookedLoadstring
-
-local bloxyFn, err = originalLoadstring(game:HttpGet(BLOXY_URL))
-if not bloxyFn then
-	warn("BLOXY FF HOOK: failed to load Bloxy: " .. tostring(err))
-	return
+local hooked = false
+if hookfunction then
+	hooked = pcall(function()
+		local old
+		local hook = makeHook(function(...) return old(...) end)
+		old = hookfunction(loadstring, newcclosure and newcclosure(hook) or hook)
+	end)
+end
+if not hooked then
+	env.loadstring = makeHook(originalLoadstring)
 end
 
--- Make sure Bloxy sees the hooked loadstring even if the executor gives it its own env
-if setfenv then
-	local base = getfenv(bloxyFn)
-	setfenv(bloxyFn, setmetatable({ loadstring = hookedLoadstring }, {
-		__index = base,
-		__newindex = base,
-	}))
+----------------------------------------------------------------------------------------------------
+-- [[ AFTER BLOXY: PATCH A FORCEFIELD THAT IS ALREADY RUNNING ]] --
+----------------------------------------------------------------------------------------------------
+local patchedModels = setmetatable({}, { __mode = "k" })
+
+-- Strips studs, inlets, and disables query/touch to prevent decals or bullet marks
+local function sanitize(obj)
+	if obj:IsA("BasePart") then
+		obj.TopSurface = Enum.SurfaceType.Smooth
+		obj.BottomSurface = Enum.SurfaceType.Smooth
+		obj.LeftSurface = Enum.SurfaceType.Smooth
+		obj.RightSurface = Enum.SurfaceType.Smooth
+		obj.FrontSurface = Enum.SurfaceType.Smooth
+		obj.BackSurface = Enum.SurfaceType.Smooth
+		obj.CanCollide = false
+		obj.CanTouch = false
+		obj.CanQuery = false
+	elseif obj:IsA("Decal") or obj:IsA("Texture") then
+		task.defer(function()
+			if obj.Parent then
+				obj:Destroy()
+			end
+		end)
+	end
 end
 
-bloxyFn()
+local function patchModel(model)
+	if not model:IsA("Model") or model.Name ~= "Forcefield2012" or patchedModels[model] then return end
+	patchedModels[model] = true
+	for _, d in ipairs(model:GetDescendants()) do
+		sanitize(d)
+	end
+	model.DescendantAdded:Connect(sanitize)
+end
+
+local function watchHolder(folder)
+	if not folder:IsA("Folder") or folder.Name ~= "FFCloneHolder" then return end
+	for _, m in ipairs(folder:GetChildren()) do
+		patchModel(m)
+	end
+	folder.ChildAdded:Connect(patchModel)
+end
+
+for _, child in ipairs(workspace:GetChildren()) do
+	watchHolder(child)
+end
+workspace.ChildAdded:Connect(watchHolder)
