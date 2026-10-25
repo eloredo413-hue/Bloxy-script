@@ -1,10 +1,12 @@
--- [[ 2014 HOOK — fixes the 2014 backpack when Bloxy loads the 2014 GUI ]]
+-- [[ 2014 HOOK — makes the 2014 backpack work and look like real 2014 ]]
 -- Works when executed before OR after Bloxy, on mobile and PC.
--- 1. Hotbar: every slot gets its own box again instead of one big gray block
--- 2. Inventory: the backpack panel lists every tool you have, so you can use
---    more than what fits in the hotbar
---    tap/click a tool = equip it, drag it onto a hotbar slot = put it there
---    (on mobile hold the tool for a moment first, then drag)
+-- 1. Hotbar: item boxes keep their shadows, with 2014's 46px slots so the
+--    shadows sit apart instead of running together into one gray block
+-- 2. Inventory: puts back 2014's inventory script (missing from the 2014 GUI),
+--    so the backpack lists every tool you have
+--    drag a tool onto a hotbar slot = put it there
+--    double tap a tool = put it in the first free hotbar slot
+--    ▲ ▼ = scroll, PC: click a tool that's on the hotbar = "Remove Hotkey"
 
 do
 	local Players = game:GetService("Players")
@@ -13,127 +15,155 @@ do
 	local GuiService = game:GetService("GuiService")
 	local player = Players.LocalPlayer
 
-	-- same tone the 2014 slots already had, just not overlapping anymore
-	local SLOT_COLOR = Color3.fromRGB(47, 47, 47)
-	local SLOT_TRANSPARENCY = 0.35
-	local DRAG_DISTANCE = 10 -- pixels you have to move before it counts as a drag
-	local HOLD_TIME = 0.35 -- mobile: hold this long before dragging (a quick swipe scrolls)
+	local ICON_SIZE = 46 -- real 2014 size (the 2014 GUI uses 54, so the shadows overlapped)
+	local DRAG_DISTANCE = 6 -- pixels you have to move before it counts as a drag
+	local DOUBLE_TAP = 0.5
 
 	local function v2(p)
 		return Vector2.new(p.X, p.Y)
 	end
 
 	------------------------------------------------------------
-	-- HOTBAR: the old "DropShadow" boxes stick out 10px on every side,
-	-- so the slots melt into one block. Make each box the size of its slot.
+	-- HOTBAR: back to 2014's slot size, shadows untouched
 	------------------------------------------------------------
-	local function restyleSlotBackground(bg)
-		if not (bg:IsA("Frame") and bg.Name == "Background") then return end
-		bg.Style = Enum.FrameStyle.Custom
-		bg.Position = UDim2.new(0, 0, 0, 0)
-		bg.Size = UDim2.new(1, 0, 1, 0)
-		bg.BackgroundColor3 = SLOT_COLOR
-		bg.BackgroundTransparency = SLOT_TRANSPARENCY
-		bg.BorderSizePixel = 0
+	local function fixSlotSize(f)
+		if f:IsA("Frame") and string.match(f.Name, "^Slot%d+$") then
+			f.Size = UDim2.new(0, ICON_SIZE, 0, ICON_SIZE)
+		end
 	end
 
 	local function fixHotbar(loadout)
-		for _, d in ipairs(loadout:GetDescendants()) do
-			restyleSlotBackground(d)
+		loadout.Size = UDim2.new(loadout.Size.X.Scale, loadout.Size.X.Offset, 0, ICON_SIZE)
+		for _, f in ipairs(loadout:GetChildren()) do
+			fixSlotSize(f)
 		end
-		loadout.DescendantAdded:Connect(restyleSlotBackground)
+		loadout.ChildAdded:Connect(fixSlotSize)
 	end
 
 	------------------------------------------------------------
-	-- INVENTORY: the 2014 port is missing the script that fills the
-	-- backpack panel, so it always opens empty. Fill it here.
+	-- INVENTORY: 2014's "BackpackGear" script, rebuilt for the 2014 GUI
 	------------------------------------------------------------
 	local function fixInventory(gui, loadout, backpackFrame)
 		local gear = backpackFrame:WaitForChild("Gear", 10)
-		if not gear then return end
+		local gearGrid = gear and gear:WaitForChild("GearGrid", 10)
+		local template = gearGrid and gearGrid:WaitForChild("GearButton", 10)
+		local scroller = gear and gear:WaitForChild("GearGridScrollingArea", 10)
+		local swap = backpackFrame:WaitForChild("SwapSlot", 10)
+		local swapSlot = swap and swap:WaitForChild("Slot", 10)
+		local swapButton = swap and swap:WaitForChild("GearButton", 10)
+		if not (template and scroller and swapSlot and swapButton) then return end
 
 		-- the 2014 scripts use this same check for phones / small screens
 		local small = gui.AbsoluteSize.Y <= 500
 		local maxHotbar = small and 4 or 10
-		local cell = small and 42 or 58
 
-		local oldGrid = gear:FindFirstChild("GearGrid")
-		if oldGrid then oldGrid.Visible = false end
-
-		local grid = Instance.new("ScrollingFrame")
-		grid.Name = "InventoryGrid"
-		grid.BackgroundTransparency = 1
-		grid.BorderSizePixel = 0
-		grid.ScrollingDirection = Enum.ScrollingDirection.Y
-		grid.ScrollBarThickness = small and 4 or 8
-		grid.ScrollBarImageColor3 = Color3.new(1, 1, 1)
-		grid.CanvasSize = UDim2.new(0, 0, 0, 0)
-		grid.AutomaticCanvasSize = Enum.AutomaticSize.Y
-		grid.ZIndex = 2
-		if small then
-			grid.Position = UDim2.new(0, 6, 0, 6)
-			grid.Size = UDim2.new(1, -12, 1, -12)
-		else
-			-- leave room for the search bar on top and the preview on the right
-			grid.Position = UDim2.new(0, 10, 0, 34)
-			grid.Size = UDim2.new(0.7, -14, 1, -44)
-		end
-		grid.Parent = gear
-
-		local layout = Instance.new("UIGridLayout")
-		layout.CellSize = UDim2.new(0, cell, 0, cell)
-		layout.CellPadding = small and UDim2.new(0, 4, 0, 4) or UDim2.new(0, 6, 0, 6)
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		layout.Parent = grid
-
-		-- big picture + name of the tool you're pointing at (PC only, no room on phones)
+		-- 2014 never showed the preview either
 		local preview = gear:FindFirstChild("GearPreview")
-		local previewImage = preview and preview:FindFirstChild("GearImage")
-		local previewStats = preview and preview:FindFirstChild("GearStats")
-		local previewName = previewStats and previewStats:FindFirstChild("GearName")
-		if preview then
-			if small then
-				preview.Visible = false
-			else
-				preview.Position = UDim2.new(0.7, 4, 0, 34)
-				preview.Size = UDim2.new(0.3, -14, 0, 200)
-				if previewImage then
-					previewImage.Position = UDim2.new(0, 0, 0, 0)
-					previewImage.Size = UDim2.new(1, 0, 0, 150)
-					previewImage.ScaleType = Enum.ScaleType.Fit
+		if preview then preview.Visible = false end
+
+		-- same spot 2014 put the grid (the strip on top is where the PC search bar sits)
+		local grid = Instance.new("Frame")
+		grid.Name = "ScrollingFrame"
+		grid.BackgroundTransparency = 1
+		grid.Position = UDim2.new(0, 0, 0, 30)
+		grid.Size = UDim2.new(1, 0, 1, -30)
+		grid.Parent = gearGrid
+
+		local bar = Instance.new("Frame")
+		bar.Name = "ScrollBar"
+		bar.BackgroundTransparency = 0.9
+		bar.BackgroundColor3 = Color3.new(1, 1, 1)
+		bar.BorderSizePixel = 0
+		bar.Position = UDim2.new(0, 0, 0, 18)
+		bar.Size = UDim2.new(0, 17, 1, -36)
+		bar.Parent = scroller
+
+		local function makeScrollButton(name, image, position)
+			local b = Instance.new("ImageButton")
+			b.Name = name
+			b.BackgroundTransparency = 1
+			b.Image = image
+			b.Position = position
+			b.Size = UDim2.new(0, 17, 0, 17)
+			b.ZIndex = 4
+			b.Parent = scroller
+			return b
+		end
+		local scrollUp = makeScrollButton("ScrollUpButton", "rbxasset://textures/ui/scrollbuttonUp.png", UDim2.new(0, 0, 0, 0))
+		local scrollDown = makeScrollButton("ScrollDownButton", "rbxasset://textures/ui/scrollbuttonDown.png", UDim2.new(0, 0, 1, -17))
+
+		local order = {} -- tools in the order you got them
+		local buttons = {} -- tool -> inventory box
+		local searchTerms = nil
+		local firstRow, lastRow = 0, 0
+		local press = nil
+		local menu = nil
+		local needsLayout = false
+
+		--------------------------------------------------------
+		-- grid layout: fill rows left to right, ▲ ▼ move a row at a time
+		--------------------------------------------------------
+		local function layout()
+			local list = {}
+			for _, t in ipairs(order) do
+				local b = buttons[t]
+				if b and b.Parent == grid then table.insert(list, b) end
+			end
+			local w, h = grid.AbsoluteSize.X, grid.AbsoluteSize.Y
+			local cols = math.max(1, math.floor((w - 1) / ICON_SIZE))
+			local rows = math.max(1, math.floor(h / ICON_SIZE))
+			lastRow = math.max(0, math.ceil(#list / cols) - rows)
+			firstRow = math.max(0, math.min(firstRow, lastRow))
+			-- center the grid like 2014 did
+			local xOff = math.ceil(math.floor(w % ICON_SIZE) / 2)
+			local yOff = math.ceil(math.floor(h % ICON_SIZE) / 2)
+			for i, b in ipairs(list) do
+				local row = math.floor((i - 1) / cols) - firstRow
+				local col = (i - 1) % cols
+				b.Position = UDim2.new(0, xOff + col * ICON_SIZE, 0, yOff + row * ICON_SIZE)
+				b.Visible = row >= 0 and row < rows
+			end
+		end
+
+		local scrollHeld = 0
+		local function holdToScroll(button, dir)
+			button.MouseButton1Down:Connect(function()
+				scrollHeld = scrollHeld + 1
+				local mine = scrollHeld
+				firstRow = firstRow + dir
+				layout()
+				task.wait(0.2)
+				while scrollHeld == mine and (dir < 0 and firstRow > 0 or dir > 0 and firstRow < lastRow) do
+					firstRow = firstRow + dir
+					layout()
+					task.wait(0.1)
 				end
-				if previewStats then
-					previewStats.Position = UDim2.new(0, 0, 0, 155)
-					previewStats.Size = UDim2.new(1, 0, 0, 45)
+			end)
+		end
+		holdToScroll(scrollUp, -1)
+		holdToScroll(scrollDown, 1)
+
+		--------------------------------------------------------
+		-- hotbar helpers (through the "SwapSlot" the 2014 hotbar listens to)
+		--------------------------------------------------------
+		local function hotbarSlotOf(tool)
+			for _, f in ipairs(loadout:GetChildren()) do
+				local n = f:IsA("Frame") and tonumber(string.match(f.Name, "^Slot(%d+)$"))
+				if n then
+					for _, b in ipairs(f:GetChildren()) do
+						local ref = b:FindFirstChild("GearReference")
+						if ref and ref.Value == tool then
+							return (n == 0) and 10 or n
+						end
+					end
 				end
 			end
 		end
 
-		local function showPreview(tool)
-			if small or not preview then return end
-			if previewImage then previewImage.Image = tool.TextureId end
-			if previewName then previewName.Text = tool.Name end
-		end
-
-		--------------------------------------------------------
-		-- equipping / putting tools on the hotbar
-		--------------------------------------------------------
-		local function toggleEquip(tool)
-			local char = player.Character
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
-			if not hum or hum.Health <= 0 or not tool.Parent then return end
-			if tool.Parent == char then
-				hum:UnequipTools()
-			else
-				hum:EquipTool(tool)
-			end
-		end
-
-		local function hotbarButtonFor(tool)
-			for _, d in ipairs(loadout:GetDescendants()) do
-				if d.Name == "GearReference" and d:IsA("ObjectValue") and d.Value == tool then
-					return d.Parent
-				end
+		local function findEmptySlot()
+			for num = 1, maxHotbar do
+				local f = loadout:FindFirstChild("Slot" .. (num % 10))
+				if f and not f:FindFirstChildWhichIsA("GuiButton") then return num end
 			end
 		end
 
@@ -153,40 +183,98 @@ do
 			end
 		end
 
-		-- uses the 2014 "SwapSlot" the hotbar script already listens to
-		local function putOnHotbar(tool, num)
-			local swap = backpackFrame:FindFirstChild("SwapSlot")
-			local swapSlot = swap and swap:FindFirstChild("Slot")
-			local swapButton = swap and swap:FindFirstChild("GearButton")
-			if not (swapSlot and swapButton) or not tool.Parent or hotbarButtonFor(tool) then return end
-
-			-- unequip the tool we're replacing first, otherwise the hotbar
-			-- puts it straight back into the slot we're freeing
-			local frame = loadout:FindFirstChild("Slot" .. (num % 10))
-			local old = frame and frame:FindFirstChildWhichIsA("ImageButton")
-			local oldRef = old and old:FindFirstChild("GearReference")
+		local function unequipIfHeld(tool)
+			-- put a held tool away first, otherwise the hotbar puts it
+			-- straight back into the slot we're changing
 			local char = player.Character
-			if oldRef and oldRef.Value and char and oldRef.Value.Parent == char then
+			if tool and char and tool.Parent == char then
 				local hum = char:FindFirstChildOfClass("Humanoid")
 				if hum then hum:UnequipTools() end
 				task.wait()
 			end
+		end
 
-			local carrier = Instance.new("Frame")
-			local ref = Instance.new("ObjectValue")
-			ref.Name = "GearReference"
-			ref.Value = tool
-			ref.Parent = carrier
+		local function waitForSwap()
+			for _ = 1, 60 do
+				if not swap.Value then return true end
+				task.wait()
+			end
+			return false
+		end
+
+		local function sendSwap(num, tool)
+			local carrier = nil
+			if tool then
+				carrier = Instance.new("Frame")
+				local ref = Instance.new("ObjectValue")
+				ref.Name = "GearReference"
+				ref.Value = tool
+				ref.Parent = carrier
+			end
 			swapSlot.Value = num % 10
 			swapButton.Value = carrier
 			swap.Value = true
 		end
 
-		--------------------------------------------------------
-		-- tap / click / drag
-		--------------------------------------------------------
-		local press = nil
+		local function removeFromHotbar(tool)
+			local num = hotbarSlotOf(tool)
+			if not num or not waitForSwap() then return end
+			unequipIfHeld(tool)
+			sendSwap(num, nil)
+		end
 
+		local function putOnHotbar(tool, num)
+			if not tool.Parent or not waitForSwap() then return end
+			local from = hotbarSlotOf(tool)
+			if from == num then return end
+			if from then
+				-- moving it to another slot: take it out of the old one first
+				removeFromHotbar(tool)
+				if not waitForSwap() then return end
+			end
+			local frame = loadout:FindFirstChild("Slot" .. (num % 10))
+			local old = frame and frame:FindFirstChildWhichIsA("GuiButton")
+			local oldRef = old and old:FindFirstChild("GearReference")
+			unequipIfHeld(oldRef and oldRef.Value)
+			sendSwap(num, tool)
+		end
+
+		--------------------------------------------------------
+		-- PC: "Remove Hotkey" menu for tools that are on the hotbar
+		--------------------------------------------------------
+		local function hideMenu()
+			if menu then
+				menu:Destroy()
+				menu = nil
+			end
+		end
+
+		local function showMenu(button, tool)
+			hideMenu()
+			if not hotbarSlotOf(tool) then return end
+			local abs = button.AbsolutePosition
+			menu = Instance.new("TextButton")
+			menu.Name = "UnequipContextMenu"
+			menu.Style = Enum.ButtonStyle.RobloxButtonDefault
+			-- just above the box, so a double click can't land on it by accident
+			menu.Position = UDim2.new(0, abs.X - 16, 0, abs.Y - 32)
+			menu.Size = UDim2.new(0, 115, 0, 30)
+			menu.Font = Enum.Font.Arial
+			menu.TextSize = 14
+			menu.TextColor3 = Color3.new(1, 1, 1)
+			menu.Text = "Remove Hotkey"
+			menu.ZIndex = 9
+			menu.Parent = gui
+			menu.MouseButton1Click:Connect(function()
+				hideMenu()
+				task.spawn(removeFromHotbar, tool)
+			end)
+			menu.MouseLeave:Connect(hideMenu)
+		end
+
+		--------------------------------------------------------
+		-- tap / double tap / drag
+		--------------------------------------------------------
 		local function toGui(pos)
 			-- input positions skip the top bar inset, this GUI may not
 			local p = v2(pos)
@@ -196,64 +284,61 @@ do
 			return p
 		end
 
-		local function endPress()
-			if press and press.ghost then press.ghost:Destroy() end
-			press = nil
-			grid.ScrollingEnabled = true
+		local function setLayer(b, z)
+			b.ZIndex = z
+			local shadow = b:FindFirstChild("Background")
+			if shadow then shadow.ZIndex = z - 1 end
+			local icon = b:FindFirstChild("GearImage")
+			if icon then icon.ZIndex = z end
+			local text = b:FindFirstChild("GearText")
+			if text then text.ZIndex = z + 1 end
 		end
 
-		local function startDrag(pos)
-			press.dragging = true
-			grid.ScrollingEnabled = false
-			local ghost = Instance.new("ImageLabel")
-			ghost.Name = "DraggedGear"
-			ghost.Size = UDim2.new(0, cell, 0, cell)
-			ghost.BackgroundColor3 = SLOT_COLOR
-			ghost.BackgroundTransparency = SLOT_TRANSPARENCY
-			ghost.BorderSizePixel = 0
-			ghost.Image = press.tool.TextureId
-			ghost.ScaleType = Enum.ScaleType.Fit
-			ghost.ZIndex = 10
-			if press.tool.TextureId == "" then
-				local label = Instance.new("TextLabel")
-				label.BackgroundTransparency = 1
-				label.Size = UDim2.new(1, 0, 1, 0)
-				label.Font = Enum.Font.Arial
-				label.TextSize = small and 11 or 14
-				label.TextColor3 = Color3.new(1, 1, 1)
-				label.TextWrapped = true
-				label.Text = press.tool.Name
-				label.ZIndex = 11
-				label.Parent = ghost
+		local function dropBack(b, home, animate)
+			local abs = b.AbsolutePosition
+			b.Parent = grid
+			setLayer(b, 2)
+			if animate then
+				local g = grid.AbsolutePosition
+				b.Position = UDim2.new(0, abs.X - g.X, 0, abs.Y - g.Y)
+				b:TweenPosition(home, Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.5, true)
+			else
+				b.Position = home
 			end
-			press.ghost = ghost
-			local p = toGui(pos)
-			ghost.Position = UDim2.new(0, p.X - cell / 2, 0, p.Y - cell / 2)
-			ghost.Parent = gui
+			if needsLayout then
+				needsLayout = false
+				layout()
+			end
 		end
 
-		local function beginPress(tool, input)
+		local lastTap = setmetatable({}, { __mode = "k" })
+
+		local function beginPress(tool, b, input)
 			local kind = input.UserInputType
-			local touch = kind == Enum.UserInputType.Touch
-			if kind ~= Enum.UserInputType.MouseButton1 and not touch then return end
-			endPress()
-			local thisPress = {
+			if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch then return end
+			if press then return end
+			hideMenu()
+			press = {
 				tool = tool,
+				button = b,
 				input = input,
+				touch = kind == Enum.UserInputType.Touch,
 				start = v2(input.Position),
-				touch = touch,
+				grab = toGui(input.Position) - b.AbsolutePosition,
 				dragging = false,
 			}
-			press = thisPress
-			showPreview(tool)
-			if touch then
-				-- held still long enough: pick it up
-				task.delay(HOLD_TIME, function()
-					if press == thisPress and not press.dragging then
-						startDrag(press.input.Position)
-					end
-				end)
-			end
+		end
+
+		local function startDrag()
+			hideMenu()
+			local b = press.button
+			press.dragging = true
+			press.home = b.Position
+			local abs = b.AbsolutePosition
+			-- lift the box out of the panel so it can follow you down to the hotbar
+			b.Parent = gui
+			b.Position = UDim2.new(0, abs.X, 0, abs.Y)
+			setLayer(b, 10)
 		end
 
 		UserInputService.InputChanged:Connect(function(input)
@@ -261,33 +346,46 @@ do
 			local kind = input.UserInputType
 			if kind == Enum.UserInputType.MouseMovement and not press.touch
 				or kind == Enum.UserInputType.Touch and input == press.input then
+				if not press.dragging and (v2(input.Position) - press.start).Magnitude >= DRAG_DISTANCE then
+					startDrag()
+				end
 				if press.dragging then
-					local p = toGui(input.Position)
-					press.ghost.Position = UDim2.new(0, p.X - cell / 2, 0, p.Y - cell / 2)
-				elseif (v2(input.Position) - press.start).Magnitude >= DRAG_DISTANCE then
-					if press.touch then
-						endPress() -- quick swipe = scrolling the list, not dragging
-					else
-						startDrag(input.Position)
-					end
+					local p = toGui(input.Position) - press.grab
+					press.button.Position = UDim2.new(0, p.X, 0, p.Y)
 				end
 			end
 		end)
 
 		UserInputService.InputEnded:Connect(function(input)
-			if not press then return end
 			local kind = input.UserInputType
+			if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
+				scrollHeld = scrollHeld + 1 -- let go of ▲ ▼
+			end
+			if not press then return end
 			if kind == Enum.UserInputType.MouseButton1 and not press.touch
 				or kind == Enum.UserInputType.Touch and input == press.input then
 				local done = press
-				endPress()
+				press = nil
 				if done.dragging then
 					local num = slotAt(toGui(input.Position))
+					dropBack(done.button, done.home, not num)
 					if num then
 						task.spawn(putOnHotbar, done.tool, num)
 					end
 				else
-					toggleEquip(done.tool)
+					local now = os.clock()
+					if lastTap[done.tool] and now - lastTap[done.tool] < DOUBLE_TAP then
+						lastTap[done.tool] = nil
+						local num = not hotbarSlotOf(done.tool) and findEmptySlot()
+						if num then
+							task.spawn(putOnHotbar, done.tool, num)
+						end
+					else
+						lastTap[done.tool] = now
+						if not done.touch then
+							showMenu(done.button, done.tool)
+						end
+					end
 				end
 			end
 		end)
@@ -295,37 +393,34 @@ do
 		--------------------------------------------------------
 		-- building the list
 		--------------------------------------------------------
-		local order = {} -- tools in the order you got them
-		local buttons = {} -- tool -> button
-		local searchText = nil
-
 		local function makeButton(tool)
-			local b = Instance.new("ImageButton")
+			-- 2014's own inventory box (shadow included), at 2014's size
+			local b = template:Clone()
 			b.Name = "GearButton"
-			b.AutoButtonColor = false
-			b.BackgroundColor3 = SLOT_COLOR
-			b.BackgroundTransparency = SLOT_TRANSPARENCY
-			b.BorderSizePixel = 0
-			b.BorderColor3 = Color3.new(1, 1, 1)
-			b.BorderMode = Enum.BorderMode.Inset
-			b.ScaleType = Enum.ScaleType.Fit
-			b.ZIndex = 3
+			b.Size = UDim2.new(0, ICON_SIZE, 0, ICON_SIZE)
+			b.Image = ""
+			b.Visible = false
+			b.GearReference.Value = tool
 
-			local label = Instance.new("TextLabel")
-			label.Name = "GearText"
-			label.BackgroundTransparency = 1
-			label.Position = UDim2.new(0, 2, 0, 2)
-			label.Size = UDim2.new(1, -4, 1, -4)
-			label.Font = Enum.Font.Arial
-			label.TextSize = small and 11 or 14
-			label.TextColor3 = Color3.new(1, 1, 1)
-			label.TextWrapped = true
-			label.ZIndex = 4
-			label.Parent = b
+			-- icon in its own label so the shadow always stays under it
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "GearImage"
+			icon.BackgroundTransparency = 1
+			icon.Size = UDim2.new(1, 0, 1, 0)
+			icon.Parent = b
+			setLayer(b, 2)
 
-			b.InputBegan:Connect(function(input) beginPress(tool, input) end)
-			b.MouseEnter:Connect(function() showPreview(tool) end)
+			b.InputBegan:Connect(function(input) beginPress(tool, b, input) end)
 			return b
+		end
+
+		local function matches(tool)
+			if not searchTerms then return true end
+			local name = tool.Name:lower()
+			for _, term in ipairs(searchTerms) do
+				if string.find(name, term, 1, true) then return true end
+			end
+			return false
 		end
 
 		local function refresh()
@@ -338,7 +433,7 @@ do
 			for _, container in ipairs({ backpack or false, char or false }) do
 				if container then
 					for _, t in ipairs(container:GetChildren()) do
-						if t:IsA("Tool") and not t:FindFirstChild("RobloxBuildTool") and not have[t] then
+						if (t:IsA("Tool") or t:IsA("HopperBin")) and not t:FindFirstChild("RobloxBuildTool") and not have[t] then
 							have[t] = true
 							table.insert(list, t)
 						end
@@ -359,25 +454,32 @@ do
 			end
 			order = newOrder
 
+			local dragged = press and press.dragging and press.button
 			for t, b in pairs(buttons) do
 				if not have[t] then
+					if b == dragged then press = nil end
 					b:Destroy()
 					buttons[t] = nil
 				end
 			end
 
-			for i, t in ipairs(order) do
+			for _, t in ipairs(order) do
 				local b = buttons[t]
 				if not b then
 					b = makeButton(t)
 					buttons[t] = b
-					b.Parent = grid
 				end
-				b.LayoutOrder = i
-				b.Image = t.TextureId
+				b.GearImage.Image = t.TextureId
 				b.GearText.Text = (t.TextureId == "") and t.Name or ""
-				b.BorderSizePixel = (t.Parent == char) and 2 or 0 -- white outline = equipped
-				b.Visible = not searchText or string.find(t.Name:lower(), searchText, 1, true) ~= nil
+				if b ~= dragged then
+					b.Parent = matches(t) and grid or nil
+				end
+			end
+
+			if dragged then
+				needsLayout = true
+			else
+				layout()
 			end
 		end
 
@@ -395,8 +497,12 @@ do
 			if backpackFrame.Visible then
 				refresh()
 			else
-				endPress()
+				hideMenu()
 			end
+		end)
+		-- the panel slides open, so lay the grid out again as it grows
+		grid:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if not (press and press.dragging) then layout() end
 		end)
 
 		-- the search box at the top of the panel (PC)
@@ -405,12 +511,14 @@ do
 			local searchEvent = manager and manager:WaitForChild("SearchRequestedEvent", 10)
 			if not searchEvent then return end
 			searchEvent.Event:Connect(function(text)
-				text = type(text) == "string" and text:lower() or ""
-				if text == "" or text == "search..." then
-					searchText = nil
-				else
-					searchText = text
+				local terms = {}
+				if type(text) == "string" and text:lower() ~= "search..." then
+					for word in string.gmatch(text:lower(), "%S+") do
+						table.insert(terms, word)
+					end
 				end
+				searchTerms = (#terms > 0) and terms or nil
+				firstRow = 0
 				refresh()
 			end)
 		end)
