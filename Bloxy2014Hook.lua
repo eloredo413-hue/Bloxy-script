@@ -1,9 +1,8 @@
--- [[ 2014 HOOK — fixes the 2014 hotbar and inventory, made for mobile ]]
--- Works when executed before OR after Bloxy, on mobile and PC.
--- 1. Hotbar: item boxes keep their shadows, with 2014's 46px slots so the
---    shadows sit apart instead of running together into one gray block
--- 2. Inventory: the backpack panel lists every tool you have
---    tap the handle above the hotbar = open / close the inventory
+-- [[ 2014 HOOK — makes the 2014 backpack work (mobile and PC) ]]
+-- Works when executed before OR after Bloxy.
+-- Only adds what's missing, the 2014 GUI keeps its own look:
+--    the backpack panel lists every tool you have
+--    tap the arrow above the hotbar = open / close (easier to hit on phones)
 --    tap a tool = equip / unequip it
 --    drag a tool onto the hotbar = put it in that slot
 --    ▲ ▼ (or the mouse wheel) = scroll
@@ -15,91 +14,41 @@ do
 	local GuiService = game:GetService("GuiService")
 	local player = Players.LocalPlayer
 
-	local ICON_SIZE = 46 -- real 2014 hotbar size (the 2014 GUI uses 54, so the shadows overlapped)
-	local BOX_SIZE = 51 -- inventory boxes
+	local BOX_SIZE = 51 -- 3 per row, 2 rows on phones
 	local BOX_GAP = 3
-	local GRID_TOP = 33 -- room under the handle (and for the search bar on PC)
+	local GRID_TOP = 33 -- room under the arrow (and for the search bar on PC)
 	local GRID_LEFT = 14
-	local HANDLE_WIDTH, HANDLE_HEIGHT = 112, 20
-	local PANEL_COLOR = Color3.fromRGB(31, 31, 31)
-	local BOX_COLOR = Color3.fromRGB(18, 18, 18)
-	local BORDER_COLOR = Color3.fromRGB(150, 150, 150)
-	local EQUIPPED_COLOR = Color3.new(1, 1, 1)
+	local ARROW_TAP_WIDTH, ARROW_TAP_HEIGHT = 64, 30
 	local DRAG_DISTANCE = 8 -- pixels you have to move before it counts as a drag
 
 	local function v2(p)
 		return Vector2.new(p.X, p.Y)
 	end
 
-	local function addCorner(obj, radius)
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, radius)
-		c.Parent = obj
-	end
-
-	local function addBorder(obj, color, thickness, transparency)
-		local s = Instance.new("UIStroke")
-		s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-		s.Color = color
-		s.Thickness = thickness
-		s.Transparency = transparency or 0
-		s.Parent = obj
-		return s
-	end
-
 	------------------------------------------------------------
-	-- HOTBAR: back to 2014's slot size, shadows untouched
+	-- OPEN / CLOSE ARROW: it's only 14x9, too small to hit with a finger.
+	-- Give it a bigger invisible tap area, the arrow looks the same.
 	------------------------------------------------------------
-	local function fixSlotSize(f)
-		if f:IsA("Frame") and string.match(f.Name, "^Slot%d+$") then
-			f.Size = UDim2.new(0, ICON_SIZE, 0, ICON_SIZE)
-		end
-	end
-
-	local function fixHotbar(loadout)
-		loadout.Size = UDim2.new(loadout.Size.X.Scale, loadout.Size.X.Offset, 0, ICON_SIZE)
-		for _, f in ipairs(loadout:GetChildren()) do
-			fixSlotSize(f)
-		end
-		loadout.ChildAdded:Connect(fixSlotSize)
-	end
-
-	------------------------------------------------------------
-	-- OPEN / CLOSE HANDLE: the 2014 toggle is a tiny 14x9 arrow, too small
-	-- to hit with a finger. Turn it into a tab sitting on top of the hotbar
-	-- (and on top of the panel while it's open).
-	------------------------------------------------------------
-	local function fixHandle(button, backpackFrame)
-		-- the scripts keep moving it with an X offset made for the 14px arrow,
-		-- this keeps the wide tab centered on the same spot
-		button.AnchorPoint = Vector2.new(0.5 - 7 / HANDLE_WIDTH, 0)
-		button.Size = UDim2.new(0, HANDLE_WIDTH, 0, HANDLE_HEIGHT)
-		button.BackgroundColor3 = PANEL_COLOR
-		button.BorderSizePixel = 0
+	local function fixArrow(button)
+		-- the scripts keep moving it with offsets made for the 14x9 arrow,
+		-- this keeps the bigger area centered on the arrow
+		button.AnchorPoint = Vector2.new(0.5 - 7 / ARROW_TAP_WIDTH, 0.5 - 4.5 / ARROW_TAP_HEIGHT)
+		button.Size = UDim2.new(0, ARROW_TAP_WIDTH, 0, ARROW_TAP_HEIGHT)
 		button.ImageTransparency = 1
-		button.ZIndex = 3
-		addCorner(button, 8)
-		addBorder(button, BORDER_COLOR, 1.5, 0.2)
 
-		-- the arrow, flipped by the 2014 script when it opens / closes
 		local arrow = Instance.new("ImageLabel")
 		arrow.Name = "Arrow"
 		arrow.BackgroundTransparency = 1
 		arrow.AnchorPoint = Vector2.new(0.5, 0.5)
 		arrow.Position = UDim2.new(0.5, 0, 0.5, 0)
-		arrow.Size = UDim2.new(0, 21, 0, 14)
+		arrow.Size = UDim2.new(0, 14, 0, 9)
 		arrow.Image = button.Image
-		arrow.ZIndex = 4
+		arrow.ZIndex = button.ZIndex
 		arrow.Parent = button
+		-- the 2014 script flips the arrow when it opens / closes
 		button:GetPropertyChangedSignal("Image"):Connect(function()
 			arrow.Image = button.Image
 		end)
-
-		local function update()
-			button.BackgroundTransparency = backpackFrame.Visible and 0.05 or 0.35
-		end
-		backpackFrame:GetPropertyChangedSignal("Visible"):Connect(update)
-		update()
 	end
 
 	------------------------------------------------------------
@@ -107,35 +56,21 @@ do
 	------------------------------------------------------------
 	local function fixInventory(gui, loadout, backpackFrame)
 		local gear = backpackFrame:WaitForChild("Gear", 10)
+		local gearGrid = gear and gear:WaitForChild("GearGrid", 10)
+		local template = gearGrid and gearGrid:WaitForChild("GearButton", 10)
 		local scroller = gear and gear:WaitForChild("GearGridScrollingArea", 10)
 		local swap = backpackFrame:WaitForChild("SwapSlot", 10)
 		local swapSlot = swap and swap:WaitForChild("Slot", 10)
 		local swapButton = swap and swap:WaitForChild("GearButton", 10)
-		if not (scroller and swapSlot and swapButton) then return end
+		if not (template and scroller and swapSlot and swapButton) then return end
 
 		-- the 2014 scripts use this same check for phones / small screens
 		local small = gui.AbsoluteSize.Y <= 500
 		local maxHotbar = small and 4 or 10
 
-		-- dark, solid panel
-		backpackFrame.BackgroundColor3 = PANEL_COLOR
-		backpackFrame.BackgroundTransparency = 0.08
-
-		-- old empty grid and preview aren't used
-		for _, name in ipairs({ "GearGrid", "GearPreview" }) do
-			local old = gear:FindFirstChild(name)
-			if old then old.Visible = false end
-		end
-
-		-- the gray frame around the hotbar shows while the panel is open
-		local hotbarFrame = loadout:FindFirstChild("Background")
-		if hotbarFrame and hotbarFrame:IsA("ImageLabel") then
-			local function update()
-				hotbarFrame.Visible = backpackFrame.Visible
-			end
-			backpackFrame:GetPropertyChangedSignal("Visible"):Connect(update)
-			update()
-		end
+		-- the empty preview would sit on top of the list on PC
+		local preview = gear:FindFirstChild("GearPreview")
+		if preview then preview.Visible = false end
 
 		local grid = Instance.new("Frame")
 		grid.Name = "InventoryGrid"
@@ -144,7 +79,7 @@ do
 		grid.Size = UDim2.new(1, -(GRID_LEFT + 23), 1, -GRID_TOP)
 		grid.Parent = gear
 
-		-- ▲ ▼ on the right, where 2014 had them
+		-- ▲ ▼ where 2014 put them
 		local bar = Instance.new("Frame")
 		bar.Name = "ScrollBar"
 		bar.BackgroundTransparency = 0.9
@@ -330,44 +265,35 @@ do
 		end
 
 		--------------------------------------------------------
-		-- inventory boxes
+		-- inventory boxes: the 2014 GUI's own box, shadow included
 		--------------------------------------------------------
-		local function makeBox(tool, parent)
-			local b = Instance.new("ImageButton")
+		local function setLayer(b, z)
+			-- keep the shadow under the icon (in the original it drew over it)
+			b.ZIndex = z
+			local shadow = b:FindFirstChild("Background")
+			if shadow then shadow.ZIndex = z - 1 end
+			local icon = b:FindFirstChild("GearImage")
+			if icon then icon.ZIndex = z end
+			local text = b:FindFirstChild("GearText")
+			if text then text.ZIndex = z + 1 end
+		end
+
+		local function makeBox(tool)
+			local b = template:Clone()
 			b.Name = "GearButton"
-			b.AutoButtonColor = false
-			b.BackgroundColor3 = BOX_COLOR
-			b.BackgroundTransparency = 0.15
-			b.BorderSizePixel = 0
 			b.Size = UDim2.new(0, BOX_SIZE, 0, BOX_SIZE)
-			b.ZIndex = 2
-			addCorner(b, 4)
-			addBorder(b, BORDER_COLOR, 1.5)
+			b.Image = ""
+			b.Visible = true
+			b.GearReference.Value = tool
 
 			local icon = Instance.new("ImageLabel")
 			icon.Name = "GearImage"
 			icon.BackgroundTransparency = 1
-			icon.Position = UDim2.new(0, 4, 0, 4)
-			icon.Size = UDim2.new(1, -8, 1, -8)
-			icon.ScaleType = Enum.ScaleType.Fit
+			icon.Size = UDim2.new(1, 0, 1, 0)
 			icon.Image = tool.TextureId
-			icon.ZIndex = 3
 			icon.Parent = b
-
-			local text = Instance.new("TextLabel")
-			text.Name = "GearText"
-			text.BackgroundTransparency = 1
-			text.Position = UDim2.new(0, 2, 0, 2)
-			text.Size = UDim2.new(1, -4, 1, -4)
-			text.Font = Enum.Font.SourceSans
-			text.TextSize = 14
-			text.TextColor3 = Color3.new(1, 1, 1)
-			text.TextWrapped = true
-			text.Text = (tool.TextureId == "") and tool.Name or ""
-			text.ZIndex = 4
-			text.Parent = b
-
-			b.Parent = parent
+			b.GearText.Text = (tool.TextureId == "") and tool.Name or ""
+			setLayer(b, 2)
 			return b
 		end
 
@@ -396,13 +322,10 @@ do
 		local function startDrag(pos)
 			press.dragging = true
 			-- a see-through copy follows your finger, the box stays in the panel
-			local ghost = makeBox(press.tool, nil)
+			local ghost = makeBox(press.tool)
 			ghost.Name = "DraggedGear"
-			ghost.BackgroundTransparency = 0.45
-			ghost.GearImage.ImageTransparency = 0.25
-			ghost.ZIndex = 10
-			ghost.GearImage.ZIndex = 11
-			ghost.GearText.ZIndex = 12
+			ghost.GearImage.ImageTransparency = 0.3
+			setLayer(ghost, 10)
 			press.ghost = ghost
 			moveGhost(pos)
 			ghost.Parent = gui
@@ -509,16 +432,12 @@ do
 			for _, t in ipairs(order) do
 				local b = boxes[t]
 				if not b then
-					b = makeBox(t, nil)
+					b = makeBox(t)
 					b.InputBegan:Connect(function(input) beginPress(t, b, input) end)
 					boxes[t] = b
 				end
 				b.GearImage.Image = t.TextureId
 				b.GearText.Text = (t.TextureId == "") and t.Name or ""
-				-- white border = the tool you're holding
-				local held = t.Parent == char
-				b.UIStroke.Color = held and EQUIPPED_COLOR or BORDER_COLOR
-				b.UIStroke.Thickness = held and 2.5 or 1.5
 				b.Parent = matches(t) and grid or nil
 			end
 			layout()
@@ -599,14 +518,13 @@ do
 				fixed[gui] = nil -- not the 2014 GUI
 				return
 			end
-			fixHotbar(loadout)
 			task.spawn(function()
 				local controls = gui:WaitForChild("ControlFrame", 10)
-				local handle = controls and controls:WaitForChild("BackpackButton", 10)
-				if handle then fixHandle(handle, backpackFrame) end
+				local arrow = controls and controls:WaitForChild("BackpackButton", 10)
+				if arrow then fixArrow(arrow) end
 			end)
 			task.spawn(fixInventory, gui, loadout, backpackFrame)
-			print("[2014 Hook] 2014 GUI found — fixed the hotbar and inventory.")
+			print("[2014 Hook] 2014 GUI found — backpack fixed.")
 		end)
 	end
 
