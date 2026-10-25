@@ -1,6 +1,7 @@
 -- [[ 2014 HOOK — makes the 2014 backpack work (mobile and PC) ]]
 -- Works when executed before OR after Bloxy.
--- Only adds what's missing, the 2014 GUI keeps its own look:
+-- The 2014 GUI keeps its own look, this only fixes / adds:
+--    hotbar slots back to 2014's size so their shadows don't merge
 --    the backpack panel lists every tool you have
 --    tap the arrow above the hotbar = open / close (easier to hit on phones)
 --    tap a tool = equip / unequip it
@@ -11,9 +12,9 @@ do
 	local Players = game:GetService("Players")
 	local CoreGui = game:GetService("CoreGui")
 	local UserInputService = game:GetService("UserInputService")
-	local GuiService = game:GetService("GuiService")
 	local player = Players.LocalPlayer
 
+	local ICON_SIZE = 46 -- real 2014 hotbar size (the 2014 GUI uses 54, so the shadows merged)
 	local BOX_SIZE = 51 -- 3 per row, 2 rows on phones
 	local BOX_GAP = 3
 	local GRID_TOP = 33 -- room under the arrow (and for the search bar on PC)
@@ -23,6 +24,23 @@ do
 
 	local function v2(p)
 		return Vector2.new(p.X, p.Y)
+	end
+
+	------------------------------------------------------------
+	-- HOTBAR: back to 2014's slot size, shadows untouched
+	------------------------------------------------------------
+	local function fixSlotSize(f)
+		if f:IsA("Frame") and string.match(f.Name, "^Slot%d+$") then
+			f.Size = UDim2.new(0, ICON_SIZE, 0, ICON_SIZE)
+		end
+	end
+
+	local function fixHotbar(loadout)
+		loadout.Size = UDim2.new(loadout.Size.X.Scale, loadout.Size.X.Offset, 0, ICON_SIZE)
+		for _, f in ipairs(loadout:GetChildren()) do
+			fixSlotSize(f)
+		end
+		loadout.ChildAdded:Connect(fixSlotSize)
 	end
 
 	------------------------------------------------------------
@@ -175,32 +193,23 @@ do
 			end
 		end
 
-		local function findEmptySlot()
-			for num = 1, maxHotbar do
-				local f = loadout:FindFirstChild("Slot" .. (num % 10))
-				if f and not f:FindFirstChildWhichIsA("GuiButton") then return num end
-			end
-		end
-
-		local function inside(p, obj)
-			local pos, size = obj.AbsolutePosition, obj.AbsoluteSize
-			return p.X >= pos.X and p.X <= pos.X + size.X and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
-		end
-
-		-- hotbar slot number (1-10) to drop on: the slot under the finger,
-		-- or the first free slot when dropped anywhere else on the hotbar
+		-- hotbar slot number (1-10) to drop on: the nearest slot when the
+		-- dragged icon is over the hotbar row (gaps between slots count too)
 		local function dropSlotAt(p)
+			local best, bestDist = nil, math.huge
 			for _, f in ipairs(loadout:GetChildren()) do
 				local n = f:IsA("Frame") and tonumber(string.match(f.Name, "^Slot(%d+)$"))
-				if n then
-					local num = (n == 0) and 10 or n
-					if num <= maxHotbar and inside(p, f) then return num end
+				local num = n and ((n == 0) and 10 or n)
+				if num and num <= maxHotbar then
+					local pos, size = f.AbsolutePosition, f.AbsoluteSize
+					local dist = math.abs(p.X - (pos.X + size.X / 2))
+					if p.Y >= pos.Y - 20 and p.Y <= pos.Y + size.Y + 20
+						and dist <= size.X / 2 + 20 and dist < bestDist then
+						best, bestDist = num, dist
+					end
 				end
 			end
-			local pos, size = loadout.AbsolutePosition, loadout.AbsoluteSize
-			if p.X >= pos.X and p.X <= pos.X + size.X and p.Y >= pos.Y - 10 and p.Y <= pos.Y + size.Y + 10 then
-				return findEmptySlot()
-			end
+			return best
 		end
 
 		local function unequipIfHeld(tool)
@@ -300,22 +309,29 @@ do
 		--------------------------------------------------------
 		-- tap / drag
 		--------------------------------------------------------
-		local function toGui(pos)
-			-- input positions skip the top bar inset, this GUI may not
-			local p = v2(pos)
-			if gui.IgnoreGuiInset then
-				p = p + GuiService:GetGuiInset()
-			end
-			return p
+		-- The 2014 GUI sits inside the phone's safe area (and has padding),
+		-- so finger positions don't line up with its own positions. The
+		-- dragged icon starts on the box you grabbed and moves as far as
+		-- your finger moves, so it stays under your finger either way.
+		local dragLayer = Instance.new("Frame")
+		dragLayer.Name = "DragLayer"
+		dragLayer.BackgroundTransparency = 1
+		dragLayer.Size = UDim2.new(1, 0, 1, 0)
+		dragLayer.Visible = false
+		dragLayer.Parent = gui
+
+		local function ghostPosition(pos)
+			return press.boxStart + (v2(pos) - press.start)
 		end
 
 		local function endPress()
 			if press and press.ghost then press.ghost:Destroy() end
 			press = nil
+			dragLayer.Visible = false
 		end
 
 		local function moveGhost(pos)
-			local p = toGui(pos) - press.grab
+			local p = ghostPosition(pos) - dragLayer.AbsolutePosition
 			press.ghost.Position = UDim2.new(0, p.X, 0, p.Y)
 		end
 
@@ -328,7 +344,8 @@ do
 			setLayer(ghost, 10)
 			press.ghost = ghost
 			moveGhost(pos)
-			ghost.Parent = gui
+			ghost.Parent = dragLayer
+			dragLayer.Visible = true
 		end
 
 		local function beginPress(tool, b, input)
@@ -340,7 +357,7 @@ do
 				input = input,
 				touch = kind == Enum.UserInputType.Touch,
 				start = v2(input.Position),
-				grab = toGui(input.Position) - b.AbsolutePosition,
+				boxStart = b.AbsolutePosition,
 				dragging = false,
 			}
 		end
@@ -369,7 +386,9 @@ do
 				local done = press
 				endPress()
 				if done.dragging then
-					local num = dropSlotAt(toGui(input.Position))
+					-- drop where the icon is drawn (its center), not the raw finger position
+					local center = done.boxStart + (v2(input.Position) - done.start) + Vector2.new(BOX_SIZE / 2, BOX_SIZE / 2)
+					local num = dropSlotAt(center)
 					if num then
 						task.spawn(putOnHotbar, done.tool, num)
 					end
@@ -518,6 +537,7 @@ do
 				fixed[gui] = nil -- not the 2014 GUI
 				return
 			end
+			fixHotbar(loadout)
 			task.spawn(function()
 				local controls = gui:WaitForChild("ControlFrame", 10)
 				local arrow = controls and controls:WaitForChild("BackpackButton", 10)
