@@ -9,6 +9,9 @@
 --    ▲ ▼ (or the mouse wheel) = scroll
 --    other backpacks / hotbars (from the game or other scripts) get hidden,
 --    and the 2014 one stays on even if the game turns the backpack off
+--    the dark background behind the menus covers the whole screen (it left
+--    strips at the sides on phones) and goes above the leaderboard, chat and
+--    menu button, with the open menu on top
 
 do
 	local Players = game:GetService("Players")
@@ -525,6 +528,91 @@ do
 	end
 
 	------------------------------------------------------------
+	-- MENU BACKGROUND: the 2014 GUI only fills the phone's safe area, so the
+	-- dark shield behind its menus (settings, report abuse, help...) left
+	-- strips uncovered, and the leaderboard / chat / menu button showed on
+	-- top of it. Draw it over the whole screen above those, menu on top.
+	------------------------------------------------------------
+	local MENU_BACKGROUND_Z = 9 -- above the leaderboard (8), chat and menu button
+	local MENU_LIFT = 10 -- the open menu goes this much higher, above the background
+	local lifted = setmetatable({}, { __mode = "k" })
+	local shields = setmetatable({}, { __mode = "k" })
+
+	-- keep a menu piece above the background, even if its script changes its ZIndex
+	local function liftMenuPiece(obj)
+		if not obj:IsA("GuiObject") or lifted[obj] then return end
+		lifted[obj] = true
+		local expected = obj.ZIndex + MENU_LIFT
+		obj.ZIndex = expected
+		obj:GetPropertyChangedSignal("ZIndex"):Connect(function()
+			if obj.ZIndex ~= expected then
+				expected = obj.ZIndex + MENU_LIFT
+				obj.ZIndex = expected
+			end
+		end)
+	end
+
+	local function fixShield(shield, gui)
+		if shields[shield] or lifted[shield] then return end
+		shields[shield] = true
+
+		-- way bigger than the screen so it covers past the safe area and padding
+		local background = Instance.new("Frame")
+		background.Name = shield.Name .. "Background"
+		background.BorderSizePixel = 0
+		background.Position = UDim2.new(0, -2000, 0, -2000)
+		background.Size = UDim2.new(1, 4000, 1, 4000)
+		background.BackgroundColor3 = shield.BackgroundColor3
+		background.BackgroundTransparency = shield.BackgroundTransparency
+		background.ZIndex = MENU_BACKGROUND_Z
+		background.Visible = false
+		background.Parent = gui
+
+		-- the shield keeps blocking taps, it just doesn't draw anymore
+		local function takeLook()
+			if shield.BackgroundTransparency < 1 then
+				background.BackgroundColor3 = shield.BackgroundColor3
+				background.BackgroundTransparency = shield.BackgroundTransparency
+				shield.BackgroundTransparency = 1
+			end
+		end
+		takeLook()
+		shield:GetPropertyChangedSignal("BackgroundTransparency"):Connect(takeLook)
+
+		-- the menu itself goes above the background
+		liftMenuPiece(shield)
+		for _, d in ipairs(shield:GetDescendants()) do liftMenuPiece(d) end
+		shield.DescendantAdded:Connect(liftMenuPiece)
+
+		local function update()
+			background.Visible = shield.Visible and shield:IsDescendantOf(gui)
+		end
+		shield:GetPropertyChangedSignal("Visible"):Connect(update)
+		shield.AncestryChanged:Connect(function()
+			if shield:IsDescendantOf(game) then
+				update()
+			else
+				background:Destroy()
+			end
+		end)
+		update()
+	end
+
+	local function fixMenus(gui)
+		-- let the background draw outside the safe area
+		pcall(function() gui.ClipToDeviceSafeArea = false end)
+		-- every full-screen shield the 2014 menus use ends in "Shield"
+		-- (UserSettingsShield, ReportAbuseShield, HelpDialogShield, ...)
+		local function check(obj)
+			if obj:IsA("GuiObject") and string.match(obj.Name, "Shield$") then
+				fixShield(obj, gui)
+			end
+		end
+		for _, d in ipairs(gui:GetDescendants()) do check(d) end
+		gui.DescendantAdded:Connect(check)
+	end
+
+	------------------------------------------------------------
 	-- ONLY THE 2014 BACKPACK: hide custom backpacks / hotbars / inventories
 	-- (ScreenGuis, or frames right inside one, with those words in the name)
 	-- and keep the 2014 one on when the game switches the backpack off
@@ -603,13 +691,14 @@ do
 			fixHotbar(loadout)
 			keepBackpackOn(gui)
 			hideCustomInventories()
+			fixMenus(gui)
 			task.spawn(function()
 				local controls = gui:WaitForChild("ControlFrame", 10)
 				local arrow = controls and controls:WaitForChild("BackpackButton", 10)
 				if arrow then fixArrow(arrow) end
 			end)
 			task.spawn(fixInventory, gui, loadout, backpackFrame)
-			print("[2014 Hook] 2014 GUI found — backpack fixed.")
+			print("[2014 Hook] 2014 GUI found — backpack and menus fixed.")
 		end)
 	end
 
