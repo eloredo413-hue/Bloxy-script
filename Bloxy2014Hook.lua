@@ -7,6 +7,8 @@
 --    tap a tool = equip / unequip it
 --    drag a tool onto the hotbar = put it in that slot
 --    ▲ ▼ (or the mouse wheel) = scroll
+--    other backpacks / hotbars (from the game or other scripts) get hidden,
+--    and the 2014 one stays on even if the game turns the backpack off
 
 do
 	local Players = game:GetService("Players")
@@ -523,6 +525,65 @@ do
 	end
 
 	------------------------------------------------------------
+	-- ONLY THE 2014 BACKPACK: hide custom backpacks / hotbars / inventories
+	-- (ScreenGuis, or frames right inside one, with those words in the name)
+	-- and keep the 2014 one on when the game switches the backpack off
+	------------------------------------------------------------
+	local CUSTOM_WORDS = { "backpack", "inventory", "hotbar", "toolbar", "loadout", "satchel" }
+	local ROBLOX_GUIS = { NewRobloxGui = true, RobloxGui = true, TopBarApp = true }
+	local hidden = setmetatable({}, { __mode = "k" })
+
+	local function isCustomInventory(obj)
+		local root = obj:IsA("ScreenGui") and obj or obj.Parent
+		if not (root and root:IsA("ScreenGui")) or ROBLOX_GUIS[root.Name] then return false end
+		local name = obj.Name:lower()
+		for _, word in ipairs(CUSTOM_WORDS) do
+			if string.find(name, word, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function hideCustom(obj)
+		if hidden[obj] then return end
+		local ok, custom = pcall(isCustomInventory, obj)
+		if not (ok and custom) then return end
+		local prop = obj:IsA("ScreenGui") and "Enabled" or (obj:IsA("GuiObject") and "Visible")
+		if not prop then return end
+		hidden[obj] = true
+		obj[prop] = false
+		-- it stays hidden if the game tries to show it again
+		obj:GetPropertyChangedSignal(prop):Connect(function()
+			if obj[prop] then obj[prop] = false end
+		end)
+	end
+
+	local hidingStarted = false
+	local function hideCustomInventories()
+		if hidingStarted then return end
+		hidingStarted = true
+		task.spawn(function()
+			local playerGui = player:WaitForChild("PlayerGui", 30)
+			for _, container in ipairs({ playerGui or false, CoreGui }) do
+				if container then
+					for _, d in ipairs(container:GetDescendants()) do hideCustom(d) end
+					container.DescendantAdded:Connect(hideCustom)
+				end
+			end
+		end)
+	end
+
+	local function keepBackpackOn(gui)
+		-- Legacy turns the 2014 backpack off when the game disables Roblox's
+		local function on()
+			if gui:GetAttribute("BackpackEnabled") == false then
+				gui:SetAttribute("BackpackEnabled", true)
+			end
+		end
+		gui:GetAttributeChangedSignal("BackpackEnabled"):Connect(on)
+		on()
+	end
+
+	------------------------------------------------------------
 	-- FIND THE 2014 GUI (Legacy's NewRobloxGui; only 2014 has HealthGui)
 	------------------------------------------------------------
 	local fixed = setmetatable({}, { __mode = "k" })
@@ -540,6 +601,8 @@ do
 				return
 			end
 			fixHotbar(loadout)
+			keepBackpackOn(gui)
+			hideCustomInventories()
 			task.spawn(function()
 				local controls = gui:WaitForChild("ControlFrame", 10)
 				local arrow = controls and controls:WaitForChild("BackpackButton", 10)
