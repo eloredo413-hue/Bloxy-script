@@ -1,37 +1,48 @@
--- [[ MENU BACKGROUND HOOK — fixes the off-center menu background in the 2014 / 2015 GUI ]]
+-- [[ MENU BACKGROUND HOOK — fixes the menu background in the 2014 GUI ]]
 -- Works when executed before OR after Bloxy.
--- The old GUI only fills the phone's safe area (inside the notch / rounded
+-- The 2014 GUI only fills the phone's safe area (inside the notch / rounded
 -- corners), so the dark background behind its menus (settings, report abuse,
--- help...) leaves strips uncovered at the sides and bottom. This draws that
--- background on its own full-screen layer instead, so it covers everything.
+-- help...) leaves strips uncovered at the sides and bottom, and the menu
+-- button, leaderboard and chat show on top of it. This draws the background
+-- over the whole screen, above all of those, with the open menu on top.
 
 do
 	local CoreGui = game:GetService("CoreGui")
 
-	-- full screen, ignoring the safe area and the top bar
-	local layer = Instance.new("ScreenGui")
-	layer.Name = "LegacyMenuBackground"
-	layer.ResetOnSpawn = false
-	layer.IgnoreGuiInset = true
-	pcall(function() layer.ScreenInsets = Enum.ScreenInsets.None end)
-	pcall(function() layer.ClipToDeviceSafeArea = false end)
-	layer.DisplayOrder = 99 -- just under the old GUI (it uses 100)
-	layer.Parent = CoreGui
+	local BACKGROUND_Z = 9 -- above the leaderboard (8), chat and menu button
+	local LIFT = 10 -- the open menu goes this much higher, above the background
 
 	local fixed = setmetatable({}, { __mode = "k" })
+
+	-- keep a menu piece above the background, even if its script changes its ZIndex
+	local function lift(obj)
+		if not obj:IsA("GuiObject") or fixed[obj] then return end
+		fixed[obj] = true
+		local expected = obj.ZIndex + LIFT
+		obj.ZIndex = expected
+		obj:GetPropertyChangedSignal("ZIndex"):Connect(function()
+			if obj.ZIndex ~= expected then
+				expected = obj.ZIndex + LIFT
+				obj.ZIndex = expected
+			end
+		end)
+	end
 
 	local function fixShield(shield, gui)
 		if fixed[shield] then return end
 		fixed[shield] = true
 
+		-- way bigger than the screen so it covers past the safe area and padding
 		local background = Instance.new("Frame")
-		background.Name = shield.Name
+		background.Name = shield.Name .. "Background"
 		background.BorderSizePixel = 0
-		background.Size = UDim2.new(1, 0, 1, 0)
+		background.Position = UDim2.new(0, -2000, 0, -2000)
+		background.Size = UDim2.new(1, 4000, 1, 4000)
 		background.BackgroundColor3 = shield.BackgroundColor3
 		background.BackgroundTransparency = shield.BackgroundTransparency
+		background.ZIndex = BACKGROUND_Z
 		background.Visible = false
-		background.Parent = layer
+		background.Parent = gui
 
 		-- the shield keeps blocking taps, it just doesn't draw anymore
 		local function takeLook()
@@ -44,8 +55,13 @@ do
 		takeLook()
 		shield:GetPropertyChangedSignal("BackgroundTransparency"):Connect(takeLook)
 
+		-- the menu itself goes above the background
+		fixed[shield] = nil
+		lift(shield)
+		for _, d in ipairs(shield:GetDescendants()) do lift(d) end
+		shield.DescendantAdded:Connect(lift)
+
 		local function update()
-			layer.DisplayOrder = gui.DisplayOrder - 1
 			background.Visible = shield.Visible and shield:IsDescendantOf(gui)
 		end
 		shield:GetPropertyChangedSignal("Visible"):Connect(update)
@@ -59,21 +75,33 @@ do
 		update()
 	end
 
-	-- every full-screen shield the old menus use ends in "Shield"
-	-- (UserSettingsShield, SettingsShield, ReportAbuseShield, ...)
+	-- every full-screen shield the 2014 menus use ends in "Shield"
+	-- (UserSettingsShield, ReportAbuseShield, HelpDialogShield, ...)
 	local function check(obj, gui)
 		if obj:IsA("GuiObject") and string.match(obj.Name, "Shield$") then
 			fixShield(obj, gui)
 		end
 	end
 
+	local watched = setmetatable({}, { __mode = "k" })
+
 	local function watch(gui)
-		if gui.Name ~= "NewRobloxGui" or not gui:IsA("ScreenGui") then return end
-		for _, d in ipairs(gui:GetDescendants()) do
-			check(d, gui)
-		end
-		gui.DescendantAdded:Connect(function(d)
-			check(d, gui)
+		if gui.Name ~= "NewRobloxGui" or not gui:IsA("ScreenGui") or watched[gui] then return end
+		watched[gui] = true
+		task.spawn(function()
+			-- only the 2014 GUI has HealthGui (2015's menu already works)
+			if not gui:WaitForChild("HealthGui", 60) then
+				watched[gui] = nil
+				return
+			end
+			-- let the background draw outside the safe area
+			pcall(function() gui.ClipToDeviceSafeArea = false end)
+			for _, d in ipairs(gui:GetDescendants()) do
+				check(d, gui)
+			end
+			gui.DescendantAdded:Connect(function(d)
+				check(d, gui)
+			end)
 		end)
 	end
 
