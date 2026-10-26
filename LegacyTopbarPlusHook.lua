@@ -6,6 +6,10 @@
 -- on the old top bar, right after the menu / chat / backpack buttons.
 -- Clicking one clicks the real TopbarPlus button, so the game still works.
 --
+-- Games with lots of icons: the icons never run into the name / health /
+-- leaderstats on the right. When they don't fit they get smaller, and if
+-- that still isn't enough the rest go in a "•••" menu at the end.
+--
 -- It turns on whenever the old Legacy top bar (CoreGui.NewRobloxGui.TopBarContainer)
 -- is on screen, which is what the 2019, 2017, 2016 and 2015 GUIs use.
 -- 2023 loads that bar too but hides it, so it stays off there. Pick a GUI
@@ -24,13 +28,19 @@ do
 		pcall(env.LegacyTopbarPlusStop)
 	end
 
-	local SLOT = 50   -- icon-only button width, same as the old menu / chat / backpack buttons
-	local ICON = 26   -- icon size
-	local PAD = 12    -- space left and right of a button's icon / text
-	local GAP = 6     -- space between icon and text
-	local BADGE = 16  -- notice bubble height
+	-- Button sizes. slot = icon-only button width (the old menu / chat /
+	-- backpack buttons are 50), pad = space left and right of the icon /
+	-- text, gap = space between icon and text
+	local NORMAL = { slot = 50, icon = 26, pad = 12, gap = 6, text = 14 }
+	-- Used when the icons don't all fit before the right side of the bar
+	local COMPACT = { slot = 38, icon = 22, pad = 6, gap = 4, text = 13 }
+	local ROW = 36      -- height of a row in the "•••" menu
+	local MARGIN = 8    -- space kept free before the name / health on the right
+	local BADGE = 16    -- notice bubble height
+	local MENU_Z = 8
 	local FONT = Enum.Font.SourceSansBold
-	local TEXT_SIZE = 14
+	local WHITE = Color3.new(1, 1, 1)
+	local BLUE = Color3.fromRGB(0, 162, 255) -- old top bar "open" color
 	-- The old top bar has to stay up (or gone) this long before we switch.
 	-- 2023 loads the old bar too, then hides it a moment later.
 	local SETTLE = 2
@@ -46,6 +56,9 @@ do
 
 	local running = true
 	local holder = nil   -- our row of icons on the old top bar
+	local more = nil     -- the "•••" button at the end of that row
+	local menu = nil     -- the list it opens, for icons that didn't fit
+	local menuOpen = false
 	local zIndex = 1
 	local mirrors = {}   -- TopbarPlus icon frame -> its classic copy
 	local disabled = {}  -- TopbarPlus ScreenGuis we turned off -> their Enabled watcher
@@ -58,9 +71,30 @@ do
 		end
 	end
 
+	local widths, widthCount = {}, 0
 	local function textWidth(text, size)
-		local plain = (text:gsub("<[^>]*>", ""))
-		return math.ceil(TextService:GetTextSize(plain, size, FONT, Vector2.new(1000, 100)).X)
+		local key = size .. "|" .. text
+		local width = widths[key]
+		if not width then
+			if widthCount >= 256 then
+				widths, widthCount = {}, 0
+			end
+			local plain = (text:gsub("<[^>]*>", ""))
+			width = math.ceil(TextService:GetTextSize(plain, size, FONT, Vector2.new(1000, 100)).X)
+			widths[key] = width
+			widthCount = widthCount + 1
+		end
+		return width
+	end
+
+	local function badgeWidth(text)
+		return math.max(BADGE, textWidth(text, 12) + 6)
+	end
+
+	local function corner(parent)
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(1, 0)
+		c.Parent = parent
 	end
 
 	------------------------------------------------------------
@@ -110,7 +144,7 @@ do
 		local barHeight = bar.AbsoluteSize.Y
 		local x, y, h, z = nil, 0, barHeight, 1
 		for _, child in ipairs(row:GetChildren()) do
-			if child ~= holder and child:IsA("GuiObject") and child.Visible then
+			if child ~= holder and child ~= menu and child:IsA("GuiObject") and child.Visible then
 				local pos, size = child.AbsolutePosition, child.AbsoluteSize
 				if size.X > 0 and size.X <= 120 and size.Y >= barHeight * 0.5 and pos.X < limit then
 					local right = pos.X + size.X - origin.X
@@ -120,7 +154,43 @@ do
 				end
 			end
 		end
-		return x or SLOT, y, h, z
+		return x or NORMAL.slot, y, h, z
+	end
+
+	-- Whether something is actually drawn: text, an image or a background
+	local function drawn(obj)
+		if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+			if obj.Text ~= "" and obj.TextTransparency < 1 then
+				return true
+			end
+		elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+			if obj.Image ~= "" and obj.ImageTransparency < 1 then
+				return true
+			end
+		end
+		return obj.BackgroundTransparency < 1
+	end
+
+	-- Left edge of what's drawn on the right of the bar (name / health,
+	-- leaderstats), so our icons stop before it. Things that stick out
+	-- a little past the left buttons (like the chat's unread count) don't count.
+	local function rightSideStart(bar, startX)
+		local edge = bar.AbsolutePosition.X + bar.AbsoluteSize.X
+		local maxWidth = bar.AbsoluteSize.X * 0.9
+		local function scan(parent)
+			for _, child in ipairs(parent:GetChildren()) do
+				if child ~= holder and child ~= menu and child:IsA("GuiObject") and child.Visible then
+					local left, width = child.AbsolutePosition.X, child.AbsoluteSize.X
+					if width > 0 and width < maxWidth and left >= startX + 16 and left < edge and drawn(child) then
+						edge = left
+					else
+						scan(child)
+					end
+				end
+			end
+		end
+		scan(bar)
+		return edge
 	end
 
 	------------------------------------------------------------
@@ -163,53 +233,90 @@ do
 		return nil
 	end
 
-	local function sync(entry)
+	-- Copies the real icon's image, text and notice onto its classic copy
+	local function refresh(entry)
 		local ui = entry.ui
 		local image, label = entry.image, entry.label
-		local hasImage = image ~= nil and image.Image ~= ""
-		local text = (label and label.Text) or ""
-		local hasText = text ~= ""
+		entry.hasImage = image ~= nil and image.Image ~= ""
+		entry.text = (label and label.Text) or ""
+		entry.notice = noticeText(entry.noticeRoot)
+		entry.show = entry.frame.Visible and (entry.hasImage or entry.text ~= "")
 
-		if hasImage then
+		if entry.hasImage then
 			-- Keeps the game's own image (and sprite sheet spot), not its
 			-- modern colors, so it stays a plain white 2016 icon
 			set(ui.icon, "Image", image.Image)
 			set(ui.icon, "ImageRectOffset", image.ImageRectOffset)
 			set(ui.icon, "ImageRectSize", image.ImageRectSize)
 		end
-		set(ui.icon, "Visible", hasImage)
-		set(ui.label, "Text", text)
-		set(ui.label, "Visible", hasText)
-
-		local width = SLOT
-		local iconX = (SLOT - ICON) / 2
-		local textX, tw = PAD, 0
-		if hasText then
-			tw = textWidth(text, TEXT_SIZE)
-			if hasImage then
-				iconX = PAD
-				textX = PAD + ICON + GAP
-				width = textX + tw + PAD
-			else
-				width = math.max(SLOT, tw + PAD * 2)
-				textX = math.floor((width - tw) / 2)
-			end
+		set(ui.icon, "Visible", entry.hasImage)
+		set(ui.label, "Text", entry.text)
+		set(ui.label, "Visible", entry.text ~= "")
+		set(ui.badge, "Visible", entry.notice ~= nil)
+		if entry.notice then
+			set(ui.badge, "Text", entry.notice)
 		end
-		set(ui.button, "Size", UDim2.new(0, width, 1, 0))
+	end
+
+	-- Width of an icon's button and where its icon / text go. Rows in the
+	-- "•••" menu put the icon then the text from the left, notice last.
+	local function measure(entry, m, inMenu)
+		local tw = (entry.text ~= "") and textWidth(entry.text, m.text) or 0
+		if inMenu then
+			local textX = entry.hasImage and (m.pad + m.icon + m.gap) or m.pad
+			local extra = entry.notice and (badgeWidth(entry.notice) + m.gap) or 0
+			return math.max(m.slot, textX + tw + extra + m.pad), m.pad, textX, tw
+		end
+		if tw > 0 and entry.hasImage then
+			local textX = m.pad + m.icon + m.gap
+			return textX + tw + m.pad, m.pad, textX, tw
+		elseif tw > 0 then
+			local width = math.max(m.slot, tw + m.pad * 2)
+			return width, 0, math.floor((width - tw) / 2), tw
+		end
+		return m.slot, (m.slot - m.icon) / 2, 0, 0
+	end
+
+	-- Puts a classic copy on the bar, or in the menu when menuWidth is given
+	local function place(entry, m, parent, menuWidth)
+		local ui = entry.ui
+		local inMenu = menuWidth ~= nil
+		local width, iconX, textX, tw = measure(entry, m, inMenu)
+		local z = inMenu and (MENU_Z + 1) or zIndex
+
+		set(ui.button, "Parent", parent)
+		set(ui.button, "Size", inMenu and UDim2.fromOffset(menuWidth, ROW) or UDim2.new(0, width, 1, 0))
+		set(ui.button, "ZIndex", z)
+		set(ui.icon, "ZIndex", z + 1)
+		set(ui.label, "ZIndex", z + 1)
+		set(ui.badge, "ZIndex", z + 2)
+		set(ui.icon, "Size", UDim2.fromOffset(m.icon, m.icon))
 		set(ui.icon, "Position", UDim2.new(0, iconX, 0.5, 0))
+		set(ui.label, "TextSize", m.text)
 		set(ui.label, "Position", UDim2.new(0, textX, 0, 0))
 		set(ui.label, "Size", UDim2.new(0, tw, 1, 0))
 
-		local count = noticeText(entry.noticeRoot)
-		set(ui.badge, "Visible", count ~= nil)
-		if count then
-			local right = hasImage and (iconX + ICON) or (textX + tw)
-			set(ui.badge, "Text", count)
-			set(ui.badge, "Size", UDim2.fromOffset(math.max(BADGE, textWidth(count, 12) + 6), BADGE))
-			set(ui.badge, "Position", UDim2.fromOffset(right - 8, 2))
+		if entry.notice then
+			local bw = badgeWidth(entry.notice)
+			set(ui.badge, "Size", UDim2.fromOffset(bw, BADGE))
+			if inMenu then
+				set(ui.badge, "Position", UDim2.new(0, menuWidth - m.pad - bw, 0.5, -BADGE / 2))
+			else
+				local right = entry.hasImage and (iconX + m.icon) or (textX + tw)
+				set(ui.badge, "Position", UDim2.fromOffset(right - 8, 2))
+			end
 		end
+		set(ui.button, "Visible", true)
+	end
 
-		set(ui.button, "Visible", entry.frame.Visible and (hasImage or hasText))
+	local function closeMenu()
+		menuOpen = false
+		if menu then
+			menu.Visible = false
+		end
+		if more then
+			more.Dots.TextColor3 = WHITE
+		end
 	end
 
 	local function makeMirror(entry)
@@ -218,27 +325,22 @@ do
 		button.BackgroundTransparency = 1
 		button.AutoButtonColor = false
 		button.Image = ""
-		button.Size = UDim2.new(0, SLOT, 1, 0)
-		button.ZIndex = zIndex
+		button.Visible = false
 
 		local icon = Instance.new("ImageLabel")
 		icon.Name = "Icon" -- the 2019 GUI leaves top bar images called "Icon" alone
 		icon.BackgroundTransparency = 1
 		icon.AnchorPoint = Vector2.new(0, 0.5)
-		icon.Size = UDim2.fromOffset(ICON, ICON)
 		icon.ScaleType = Enum.ScaleType.Fit
-		icon.ZIndex = zIndex + 1
 		icon.Parent = button
 
 		local label = Instance.new("TextLabel")
 		label.Name = "Label"
 		label.BackgroundTransparency = 1
 		label.Font = FONT
-		label.TextSize = TEXT_SIZE
-		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextColor3 = WHITE
 		label.TextXAlignment = Enum.TextXAlignment.Left
 		label.RichText = true
-		label.ZIndex = zIndex + 1
 		label.Parent = button
 
 		-- Red count bubble, like the old chat button's unread count
@@ -248,25 +350,94 @@ do
 		badge.BorderSizePixel = 0
 		badge.Font = FONT
 		badge.TextSize = 12
-		badge.TextColor3 = Color3.new(1, 1, 1)
+		badge.TextColor3 = WHITE
 		badge.Visible = false
-		badge.ZIndex = zIndex + 2
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(1, 0)
-		corner.Parent = badge
+		corner(badge)
 		badge.Parent = button
 
 		button.MouseButton1Click:Connect(function()
+			if menu and button.Parent == menu then
+				closeMenu()
+			end
 			press(entry.click)
 			task.delay(0.1, function()
 				if entry.ui and entry.ui.button.Parent then
-					pcall(sync, entry)
+					pcall(refresh, entry)
 				end
 			end)
 		end)
 
 		button.Parent = holder
 		return { button = button, icon = icon, label = label, badge = badge }
+	end
+
+	-- Our row on the bar, its "•••" button, and the menu that button opens
+	local function build(row, bar)
+		holder = Instance.new("Frame")
+		holder.Name = "LegacyTopbarPlusIcons"
+		holder.BackgroundTransparency = 1
+		holder.AutomaticSize = Enum.AutomaticSize.X
+		holder.ZIndex = zIndex
+		local list = Instance.new("UIListLayout")
+		list.FillDirection = Enum.FillDirection.Horizontal
+		list.SortOrder = Enum.SortOrder.LayoutOrder
+		list.VerticalAlignment = Enum.VerticalAlignment.Center
+		list.Parent = holder
+		holder.Parent = row
+
+		more = Instance.new("ImageButton")
+		more.Name = "More"
+		more.BackgroundTransparency = 1
+		more.AutoButtonColor = false
+		more.Image = ""
+		more.LayoutOrder = 1000000
+		more.Visible = false
+		more.ZIndex = zIndex
+		local dots = Instance.new("TextLabel")
+		dots.Name = "Dots"
+		dots.BackgroundTransparency = 1
+		dots.Size = UDim2.fromScale(1, 1)
+		dots.Font = FONT
+		dots.TextSize = 18
+		dots.TextColor3 = WHITE
+		dots.Text = "•••"
+		dots.ZIndex = zIndex + 1
+		dots.Parent = more
+		-- Red dot when an icon in the menu has a notice
+		local dot = Instance.new("Frame")
+		dot.Name = "Notice"
+		dot.BackgroundColor3 = Color3.fromRGB(254, 54, 54)
+		dot.BorderSizePixel = 0
+		dot.Size = UDim2.fromOffset(8, 8)
+		dot.Position = UDim2.new(1, -10, 0, 6)
+		dot.Visible = false
+		dot.ZIndex = zIndex + 2
+		corner(dot)
+		dot.Parent = more
+		more.Parent = holder
+
+		-- On the bar's ScreenGui, not inside the bar, so the bar can't clip it
+		menu = Instance.new("Frame")
+		menu.Name = "LegacyTopbarPlusMenu"
+		menu.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
+		menu.BackgroundTransparency = 0.15
+		menu.BorderSizePixel = 0
+		menu.Visible = false
+		menu.ZIndex = MENU_Z
+		local menuList = Instance.new("UIListLayout")
+		menuList.SortOrder = Enum.SortOrder.LayoutOrder
+		menuList.Parent = menu
+		menu.Parent = bar:FindFirstAncestorWhichIsA("LayerCollector") or row
+
+		more.MouseButton1Click:Connect(function()
+			if menuOpen then
+				closeMenu()
+			else
+				menuOpen = true
+				menu.Visible = true
+				dots.TextColor3 = BLUE
+			end
+		end)
 	end
 
 	------------------------------------------------------------
@@ -308,8 +479,8 @@ do
 				if group then
 					for _, widget in ipairs(side:GetChildren()) do
 						local iconButton = widget:FindFirstChild("IconButton")
-						local menu = iconButton and iconButton:FindFirstChild("Menu")
-						local spot = menu and menu:FindFirstChild("IconSpot")
+						local iconMenu = iconButton and iconButton:FindFirstChild("Menu")
+						local spot = iconMenu and iconMenu:FindFirstChild("IconSpot")
 						local contents = spot and spot:FindFirstChild("Contents")
 						if contents and widget:IsA("GuiObject") and widget.Name:sub(1, 8) ~= "Overflow" then
 							track(widget, spot:FindFirstChild("ClickRegion"),
@@ -342,6 +513,12 @@ do
 			holder:Destroy()
 			holder = nil
 		end
+		if menu then
+			menu:Destroy()
+			menu = nil
+		end
+		more = nil
+		menuOpen = false
 		mirrors = {}
 		for gui, conn in pairs(disabled) do
 			conn:Disconnect()
@@ -357,22 +534,9 @@ do
 		local x, y, h, z = leftButtonsEnd(row, bar)
 
 		if not (holder and holder.Parent == row) then
-			if holder then
-				holder:Destroy()
-			end
-			mirrors = {}
+			deactivate()
 			zIndex = z
-			holder = Instance.new("Frame")
-			holder.Name = "LegacyTopbarPlusIcons"
-			holder.BackgroundTransparency = 1
-			holder.AutomaticSize = Enum.AutomaticSize.X
-			holder.ZIndex = zIndex
-			local list = Instance.new("UIListLayout")
-			list.FillDirection = Enum.FillDirection.Horizontal
-			list.SortOrder = Enum.SortOrder.LayoutOrder
-			list.VerticalAlignment = Enum.VerticalAlignment.Center
-			list.Parent = holder
-			holder.Parent = row
+			build(row, bar)
 		end
 		set(holder, "Position", UDim2.fromOffset(x, y))
 		set(holder, "Size", UDim2.fromOffset(0, h))
@@ -403,10 +567,83 @@ do
 		table.sort(list, function(a, b)
 			return a.order < b.order
 		end)
+
+		local shown = {}
 		for i, entry in ipairs(list) do
 			set(entry.ui.button, "LayoutOrder", i)
-			pcall(sync, entry)
+			pcall(refresh, entry)
+			if entry.show then
+				table.insert(shown, entry)
+			else
+				set(entry.ui.button, "Visible", false)
+			end
 		end
+
+		-- Room between the left buttons and the right side of the bar
+		local startX = row.AbsolutePosition.X + x
+		local room = math.huge
+		if bar.AbsoluteSize.X > 0 then
+			room = rightSideStart(bar, startX) - startX - MARGIN
+		end
+
+		local function total(m)
+			local sum = 0
+			for _, entry in ipairs(shown) do
+				sum = sum + (measure(entry, m))
+			end
+			return sum
+		end
+
+		-- Normal size if everything fits, else smaller, else fill the bar
+		-- (keeping a spot for "•••") and put the rest in the menu
+		local m, fit = NORMAL, #shown
+		if total(NORMAL) > room then
+			m = COMPACT
+			if total(COMPACT) > room then
+				fit = 0
+				local used = COMPACT.slot
+				for i, entry in ipairs(shown) do
+					used = used + (measure(entry, COMPACT))
+					if used > room then
+						break
+					end
+					fit = i
+				end
+			end
+		end
+
+		local menuWidth, menuNotice = 0, false
+		for i = fit + 1, #shown do
+			menuWidth = math.max(menuWidth, (measure(shown[i], NORMAL, true)))
+			menuNotice = menuNotice or shown[i].notice ~= nil
+		end
+		for i, entry in ipairs(shown) do
+			if i <= fit then
+				place(entry, m, holder)
+			else
+				place(entry, NORMAL, menu, menuWidth)
+			end
+		end
+
+		local overflow = #shown - fit
+		set(more, "Visible", overflow > 0)
+		set(more, "Size", UDim2.new(0, m.slot, 1, 0))
+		set(more.Notice, "Visible", menuNotice)
+		if overflow == 0 then
+			if menuOpen then
+				closeMenu()
+			end
+			return
+		end
+
+		-- The menu hangs under the "•••" button, kept on screen
+		local gui = menu.Parent
+		local origin = gui:IsA("GuiBase2d") and gui.AbsolutePosition or Vector2.new()
+		local screenWidth = gui:IsA("GuiBase2d") and gui.AbsoluteSize.X or math.huge
+		local menuX = math.min(more.AbsolutePosition.X - origin.X, screenWidth - menuWidth - 4)
+		local menuY = bar.AbsolutePosition.Y + bar.AbsoluteSize.Y - origin.Y
+		set(menu, "Position", UDim2.fromOffset(math.max(0, menuX), menuY))
+		set(menu, "Size", UDim2.fromOffset(menuWidth, ROW * overflow))
 	end
 
 	------------------------------------------------------------
