@@ -15,8 +15,10 @@ do
 	local player = Players.LocalPlayer
 
 	local ICON_SIZE = 46 -- real 2014 hotbar size (the 2014 GUI uses 54, so the shadows merged)
-	local BOX_SIZE = 51 -- 3 per row, 2 rows on phones
-	local BOX_GAP = 3
+	-- 3 per row, 2 rows on phones, with enough gap that the box shadows
+	-- don't run together (same spacing idea as the hotbar)
+	local BOX_SIZE = 44
+	local BOX_GAP = 10
 	local GRID_TOP = 33 -- room under the arrow (and for the search bar on PC)
 	local GRID_LEFT = 14
 	local ARROW_TAP_WIDTH, ARROW_TAP_HEIGHT = 64, 30
