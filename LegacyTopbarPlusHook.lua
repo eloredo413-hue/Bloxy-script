@@ -7,8 +7,9 @@
 -- Clicking one clicks the real TopbarPlus button, so the game still works.
 --
 -- Games with lots of icons: the icons never run into the name / health /
--- leaderstats on the right. When they don't fit they get smaller, and if
--- that still isn't enough the rest go in a "•••" menu at the end.
+-- leaderstats on the right. A few icons stay normal size; when they don't
+-- fit they shrink only as much as needed, and if even the smallest size
+-- isn't enough the rest go in a "•••" menu at the end.
 --
 -- It turns on whenever the old Legacy top bar (CoreGui.NewRobloxGui.TopBarContainer)
 -- is on screen, which is what the 2019, 2017, 2016 and 2015 GUIs use.
@@ -32,8 +33,10 @@ do
 	-- backpack buttons are 50), pad = space left and right of the icon /
 	-- text, gap = space between icon and text
 	local NORMAL = { slot = 50, icon = 26, pad = 12, gap = 6, text = 14 }
-	-- Used when the icons don't all fit before the right side of the bar
+	-- The smallest they get when the icons don't all fit before the right
+	-- side of the bar. They only shrink as much as needed to fit, in steps.
 	local COMPACT = { slot = 38, icon = 22, pad = 6, gap = 4, text = 13 }
+	local SHRINK_STEPS = 10
 	local ROW = 36      -- height of a row in the "•••" menu
 	local MARGIN = 8    -- space kept free before the name / health on the right
 	local BADGE = 16    -- notice bubble height
@@ -85,6 +88,20 @@ do
 			widthCount = widthCount + 1
 		end
 		return width
+	end
+
+	-- A size between NORMAL (t = 0) and COMPACT (t = 1)
+	local function sizeAt(t)
+		if t <= 0 then
+			return NORMAL
+		elseif t >= 1 then
+			return COMPACT
+		end
+		local m = {}
+		for key, value in pairs(NORMAL) do
+			m[key] = math.floor(value + (COMPACT[key] - value) * t + 0.5)
+		end
+		return m
 	end
 
 	local function badgeWidth(text)
@@ -172,16 +189,22 @@ do
 	end
 
 	-- Left edge of what's drawn on the right of the bar (name / health,
-	-- leaderstats), so our icons stop before it. Things that stick out
-	-- a little past the left buttons (like the chat's unread count) don't count.
+	-- leaderstats), so our icons stop before it. Only things in the right
+	-- half count, so something small near the left buttons (like the chat's
+	-- unread count, or a thin line) can't make the icons shrink for nothing.
 	local function rightSideStart(bar, startX)
 		local edge = bar.AbsolutePosition.X + bar.AbsoluteSize.X
+		local middle = bar.AbsolutePosition.X + bar.AbsoluteSize.X / 2
 		local maxWidth = bar.AbsoluteSize.X * 0.9
+		local minHeight = bar.AbsoluteSize.Y * 0.25
 		local function scan(parent)
 			for _, child in ipairs(parent:GetChildren()) do
 				if child ~= holder and child ~= menu and child:IsA("GuiObject") and child.Visible then
-					local left, width = child.AbsolutePosition.X, child.AbsoluteSize.X
-					if width > 0 and width < maxWidth and left >= startX + 16 and left < edge and drawn(child) then
+					local left, size = child.AbsolutePosition.X, child.AbsoluteSize
+					if size.X > 0 and size.X < maxWidth and size.Y >= minHeight
+						and left >= startX + 16 and left + size.X / 2 > middle
+						and left < edge and drawn(child)
+					then
 						edge = left
 					else
 						scan(child)
@@ -594,21 +617,27 @@ do
 			return sum
 		end
 
-		-- Normal size if everything fits, else smaller, else fill the bar
-		-- (keeping a spot for "•••") and put the rest in the menu
-		local m, fit = NORMAL, #shown
-		if total(NORMAL) > room then
-			m = COMPACT
-			if total(COMPACT) > room then
-				fit = 0
-				local used = COMPACT.slot
-				for i, entry in ipairs(shown) do
-					used = used + (measure(entry, COMPACT))
-					if used > room then
-						break
-					end
-					fit = i
+		-- Normal size when everything fits. Otherwise shrink only as much as
+		-- needed (a few icons stay close to normal), down to COMPACT. If even
+		-- that's too wide, fill the bar (keeping a spot for "•••") and put
+		-- the rest in the menu.
+		local m, fit = nil, #shown
+		for step = 0, SHRINK_STEPS do
+			local size = sizeAt(step / SHRINK_STEPS)
+			if total(size) <= room then
+				m = size
+				break
+			end
+		end
+		if not m then
+			m, fit = COMPACT, 0
+			local used = COMPACT.slot
+			for i, entry in ipairs(shown) do
+				used = used + (measure(entry, COMPACT))
+				if used > room then
+					break
 				end
+				fit = i
 			end
 		end
 
