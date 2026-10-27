@@ -819,6 +819,9 @@ do
 				fixed[gui] = nil -- not the 2014 GUI
 				return
 			end
+			-- the Early 2015 GUI has these fixes built in: fix the GUI only once
+			if gui:GetAttribute("Fixed2014Gui") then return end
+			gui:SetAttribute("Fixed2014Gui", true)
 			fixHotbar(loadout)
 			keepBackpackOn(gui)
 			hideCustomInventories()
