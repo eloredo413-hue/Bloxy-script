@@ -12,11 +12,14 @@
 --    the dark background behind the menus covers the whole screen (it left
 --    strips at the sides on phones) and goes above the leaderboard, chat and
 --    menu button, with the open menu on top
+--    chat lines read "[name]: message" like the real GUI (it's early 2015),
+--    the ":" after the name was missing
 
 do
 	local Players = game:GetService("Players")
 	local CoreGui = game:GetService("CoreGui")
 	local UserInputService = game:GetService("UserInputService")
+	local TextService = game:GetService("TextService")
 	local player = Players.LocalPlayer
 
 	local ICON_SIZE = 46 -- real 2014 hotbar size (the 2014 GUI uses 54, so the shadows merged)
@@ -672,6 +675,134 @@ do
 	end
 
 	------------------------------------------------------------
+	-- CHAT: this GUI is really early 2015, and its chat lines read
+	-- "[name]: message". Legacy leaves out the ":" so they showed
+	-- "[name] message". Put it back after the name (in the name's color)
+	-- and move the message over so there's still a gap after it.
+	------------------------------------------------------------
+	local chatNames = setmetatable({}, { __mode = "k" }) -- name labels that got their ":"
+	local widened = setmetatable({}, { __mode = "k" })
+	local padded = setmetatable({}, { __mode = "k" }) -- message label -> the text we gave it
+
+	local function isText(obj)
+		return obj:IsA("TextLabel") or obj:IsA("TextButton")
+	end
+
+	local function isPlayerName(name)
+		if Players:FindFirstChild(name) then return true end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.DisplayName == name then return true end
+		end
+		return false
+	end
+
+	local function textWidth(label, text)
+		local ok, size = pcall(function()
+			return TextService:GetTextSize(text, label.TextSize, label.Font, Vector2.new(10000, 10000))
+		end)
+		return ok and size.X or 0
+	end
+
+	local function colonWidth(label)
+		return math.max(0, textWidth(label, "]:") - textWidth(label, "]"))
+	end
+
+	-- a message that starts with spaces (2+): they're the room the name sits in
+	local function splitPadding(label)
+		local lead, spaces, rest = string.match(label.Text, "^(.-)(  +)(.*)$")
+		if lead and string.gsub(lead, "<[^>]*>", "") == "" then
+			return lead, spaces, rest
+		end
+	end
+
+	local function addColon(label)
+		local plain = label.RichText and string.gsub(label.Text, "<[^>]*>", "") or label.Text
+		-- "[name]" on its own, or "[name] message" in one label, maybe after
+		-- a dot. Text starting with spaces is a message, so someone typing
+		-- "[name] hi" in chat doesn't get a ":" added.
+		local before, name, after = string.match(plain, "^([^%[]*)%[([^%]]+)%](.*)$")
+		if not name or string.find(before, "^%s") or string.find(before, "%w") or not isPlayerName(name) then
+			return
+		end
+		local alone = string.find(after, "^%s*$") ~= nil
+		if not alone and not string.find(after, "^%s") then return end -- already has its ":"
+
+		local _, close = string.find(label.Text, "[" .. name .. "]", 1, true)
+		if not close then return end
+		label.Text = string.sub(label.Text, 1, close) .. ":" .. string.sub(label.Text, close + 1)
+		if not alone then return end
+		chatNames[label] = true
+
+		-- a name label sized to fit the name gets wider for the ":" (if the
+		-- line is laid out in a row, that also pushes the message along)
+		local auto = label.AutomaticSize
+		if not widened[label] and label.Size.X.Scale == 0 and not label.TextScaled
+			and auto ~= Enum.AutomaticSize.X and auto ~= Enum.AutomaticSize.XY then
+			widened[label] = true
+			label.Size = label.Size + UDim2.new(0, colonWidth(label), 0, 0)
+		end
+	end
+
+	-- add enough spaces in front of the message to make room for the ":" (usually 1)
+	local function padMessage(msg, nameLabel)
+		if padded[msg] == msg.Text then return end
+		local lead, spaces, rest = splitPadding(msg)
+		if not lead then return end
+		local colon, space = colonWidth(nameLabel), textWidth(msg, "a a") - textWidth(msg, "aa")
+		local extra = (colon > 0 and space > 0) and math.ceil(colon / space) or 1
+		msg.Text = lead .. spaces .. string.rep(" ", extra) .. rest
+		padded[msg] = msg.Text
+	end
+
+	-- the other half of a chat line, on the same row: the parent (the name
+	-- can sit inside the message), a sibling or a child
+	local function partner(label, wanted)
+		local list = label:GetChildren()
+		local parent = label.Parent
+		if parent then
+			table.insert(list, parent)
+			for _, c in ipairs(parent:GetChildren()) do table.insert(list, c) end
+		end
+		local best, bestDist = nil, math.huge
+		for _, other in ipairs(list) do
+			if other ~= label and isText(other) and wanted(other) then
+				local dist = math.abs(other.AbsolutePosition.Y - label.AbsolutePosition.Y)
+				local row = math.max(2, math.min(other.AbsoluteSize.Y, label.AbsoluteSize.Y) / 2)
+				if dist < row and dist < bestDist then
+					best, bestDist = other, dist
+				end
+			end
+		end
+		return best
+	end
+
+	local function fixChatLine(label)
+		if not label.Parent then return end
+		addColon(label)
+		-- name and message can show up in either order, so check from both sides
+		if chatNames[label] then
+			local msg = partner(label, splitPadding)
+			if msg then padMessage(msg, label) end
+		elseif splitPadding(label) then
+			local nameLabel = partner(label, function(o) return chatNames[o] end)
+			if nameLabel then padMessage(label, nameLabel) end
+		end
+	end
+
+	local function fixChat(gui)
+		local function watch(obj)
+			if not isText(obj) then return end
+			-- deferred, so the whole line is built by the time we look at it
+			task.defer(fixChatLine, obj)
+			obj:GetPropertyChangedSignal("Text"):Connect(function()
+				task.defer(fixChatLine, obj)
+			end)
+		end
+		for _, d in ipairs(gui:GetDescendants()) do watch(d) end
+		gui.DescendantAdded:Connect(watch)
+	end
+
+	------------------------------------------------------------
 	-- FIND THE 2014 GUI (Legacy's NewRobloxGui; only 2014 has HealthGui)
 	------------------------------------------------------------
 	local fixed = setmetatable({}, { __mode = "k" })
@@ -692,13 +823,14 @@ do
 			keepBackpackOn(gui)
 			hideCustomInventories()
 			fixMenus(gui)
+			fixChat(gui)
 			task.spawn(function()
 				local controls = gui:WaitForChild("ControlFrame", 10)
 				local arrow = controls and controls:WaitForChild("BackpackButton", 10)
 				if arrow then fixArrow(arrow) end
 			end)
 			task.spawn(fixInventory, gui, loadout, backpackFrame)
-			print("[2014 Hook] 2014 GUI found — backpack and menus fixed.")
+			print("[2014 Hook] 2014 GUI found — backpack, menus and chat fixed.")
 		end)
 	end
 
