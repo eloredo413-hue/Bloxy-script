@@ -5,6 +5,10 @@
 --
 -- Your pick is saved (BloxyTerrainChoice.json), so when Bloxy's "skip setup"
 -- box is ticked the saved terrain loads by itself, just like Bloxy's own choices.
+--
+-- Works with Addition Scripts (Particles addon, Explosion step, Smooth wizard
+-- fix): the particles step is spotted even after those addons rename it, and it
+-- always comes back once a terrain is picked.
 
 do
 	local TERRAIN_URLS = {
@@ -15,7 +19,7 @@ do
 	local SAVE_FILE = "BloxyTerrainChoice.json"
 	local BLOXY_CONFIG = "BloxyParadoxConfig.json"
 	local BLOXY_GUI = "BloxyParadoxProject"
-	-- The wizard step our question goes in front of
+	-- The wizard step our question goes in front of (Bloxy's original text)
 	local NEXT_STEP_TEXT = "Do you want old particles?"
 
 	local CLICK_ID = "rbxassetid://12221967"
@@ -182,12 +186,20 @@ do
 			-- Bloxy only saves (doesn't run) when you re-configure with "skip" ticked
 			if not bloxySkipOn() then runTerrain(choice) end
 
-			local tw = TweenService:Create(f, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Position = UDim2.new(0.5, -225, 0, -250) })
-			tw:Play()
-			tw.Completed:Connect(function()
-				f:Destroy()
+			-- Move on to the next step even if a tween hook (Smooth wizard fix) changes the tween
+			local finished = false
+			local function finish()
+				if finished then return end
+				finished = true
+				pcall(function() f:Destroy() end)
 				task.spawn(onDone)
+			end
+			local ok = pcall(function()
+				local tw = TweenService:Create(f, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Position = UDim2.new(0.5, -225, 0, -250) })
+				tw.Completed:Connect(finish)
+				tw:Play()
 			end)
+			if ok then task.delay(0.6, finish) else finish() end
 		end
 
 		makeButton("2013", UDim2.new(0, 10, 0, 50), 135, f).MouseButton1Click:Connect(function() pick("2013") end)
@@ -202,29 +214,75 @@ do
 	-- When Bloxy shows "old particles" (the step after forcefield),
 	-- hide it, ask about terrain first, then let it slide in.
 	------------------------------------------------------------
+	-- Addition Scripts addons rewrite this same step's title (Particles addon:
+	-- "Which old particles?", Explosion addon: "Choose your explosion style:"),
+	-- so match any of them, not only Bloxy's exact text.
 	local function isNextStep(frame)
-		for _, d in ipairs(frame:GetChildren()) do
-			if d:IsA("TextLabel") and d.Text == NEXT_STEP_TEXT then return true end
+		for _, d in ipairs(frame:GetDescendants()) do
+			if d:IsA("TextLabel") and type(d.Text) == "string" then
+				local t = d.Text:lower()
+				if d.Text == NEXT_STEP_TEXT or t:find("particle", 1, true) or t:find("explosion style", 1, true) then
+					return true
+				end
+			end
 		end
 		return false
 	end
 
+	local handled = setmetatable({}, { __mode = "k" })
+	local asking = false
+
+	local function hookStep(sg, frame)
+		if handled[frame] or asking or not frame.Parent or not isNextStep(frame) then return end
+		handled[frame] = true
+		asking = true
+
+		-- Keep it hidden while the terrain question is up, even if an addon touches it
+		local hiddenConn = frame:GetPropertyChangedSignal("Visible"):Connect(function()
+			if asking and frame.Visible then frame.Visible = false end
+		end)
+		frame.Visible = false
+
+		local restored = false
+		local function restore()
+			if restored then return end
+			restored = true
+			asking = false
+			hiddenConn:Disconnect()
+			if frame.Parent then frame.Visible = true end
+		end
+
+		local ok, err = pcall(showTerrainUI, sg, restore)
+		if not ok then
+			warn("[Terrain Hook] Could not show the terrain step: " .. tostring(err))
+			restore()
+		end
+	end
+
 	local function onWizardFrame(sg, frame)
 		if not frame:IsA("Frame") or frame.Name == "TerrainHookStep" then return end
-		-- Bloxy sets the label text right after parenting the frame, so check a moment later
-		task.defer(function()
-			if not frame.Parent or not isNextStep(frame) then return end
-			frame.Visible = false
-			showTerrainUI(sg, function()
-				if frame.Parent then frame.Visible = true end
-			end)
+		-- Bloxy sets the label text right after parenting the frame, so check a moment
+		-- later, and again whenever a label's text changes
+		task.defer(hookStep, sg, frame)
+		local c
+		c = frame.DescendantAdded:Connect(function(d)
+			if handled[frame] or not frame.Parent then c:Disconnect() return end
+			if d:IsA("TextLabel") then
+				task.defer(hookStep, sg, frame)
+				d:GetPropertyChangedSignal("Text"):Connect(function() hookStep(sg, frame) end)
+			end
 		end)
+		table.insert(connections, c)
 	end
 
 	local appliedSaved = false
 	local function watchBloxy(sg)
 		if not (sg:IsA("ScreenGui") and sg.Name == BLOXY_GUI) then return end
 		connect(sg.ChildAdded, function(child) onWizardFrame(sg, child) end)
+		-- Executed mid-wizard: catch a particles step that is already on screen
+		for _, child in ipairs(sg:GetChildren()) do
+			if child:IsA("Frame") then task.defer(hookStep, sg, child) end
+		end
 
 		-- "Skip setup" ticked: Bloxy applies its saved choices, we apply the saved terrain
 		if not appliedSaved and bloxySkipOn() then
